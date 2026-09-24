@@ -18,7 +18,7 @@ UBDEN, Windows ağ ortamı ile Kali araçlarını tek bir görev akışında bir
 | Cihaz envanteri | IP, gözlenebilen MAC, OUI üreticisi, servis ve SNMP ipuçlarıyla gerekçeli cihaz sınıfı adayları oluşturulur. |
 | Kurumsal ortam | Uygun Windows oturumu veya sağlanan test hesabıyla salt okunur AD kontrolleri; ayrı profilli Edge/Chrome ile kapsam içi web incelemesi yapılır. |
 | Kablosuz değerlendirme | Uyumlu USB adaptör ve monitör modu doğrulandıktan sonra, görevde tanımlanan AP ve test istemcisi için sınırlı kontroller çalışır. |
-| Kanıt ve raporlama | Her adımın durumu ve kanıtı kaydedilir; yönetici PDF, teknik PDF, HTML raporu ve makine tarafından okunabilir çıktılar üretilir. |
+| Kanıt ve raporlama | Yürütülen kontrol matrisi, cihaz ve servis dağılımı, analist bulguları, kanıt özetleri ve düzeltme öncelikleri yönetici PDF, teknik PDF ve HTML raporuna işlenir. |
 
 Araç kataloğu 83 aracı kurulum, sürüm, yetenek ve görevde kullanım durumuyla izler. Hangi kontrollerin çalıştığı veya hangi ön koşul nedeniyle atlandığı raporda ayrı gösterilir.
 
@@ -29,16 +29,16 @@ Araç kataloğu 83 aracı kurulum, sürüm, yetenek ve görevde kullanım durumu
 PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v4.8.1-wsl.4/bootstrap.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v4.8.2-wsl.1/bootstrap.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v4.8.1-wsl.4/bootstrap.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v4.8.2-wsl.1/bootstrap.ps1' | iex"
 ```
 
-Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v4.8.1-wsl.4/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
+Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v4.8.2-wsl.1/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
 
 WSL için mirrored ağ ve DNS tünelleme ayarları uygulanır. Bu ayarlar bilgisayardaki **tüm WSL 2 dağıtımlarını** etkiler. UBDEN kurulum sırasında Windows ve Kali ağ görünürlüğünü denetler; VPN ve fiziksel adaptör davranışı kullanılan sürücü ve ağ yapılandırmasına bağlıdır.
 
@@ -76,16 +76,19 @@ Her görev için ayrı bir çıktı klasörü oluşturulur. Kali masaüstü otur
 
 | Dosya | İçerik |
 | --- | --- |
-| `YONETICI_OZETI.pdf` | Yönetim için kapsam, değerlendirme durumu ve öncelikli sonuçlar. |
-| `TEKNIK_RAPOR.pdf` | Servis ve cihaz envanteri, bulgular, yöntem ve kanıt yolları. |
-| `REPORT.html` | Çevrimdışı incelenebilen, yerel kanıtlara bağlantı veren rapor. |
+| `YONETICI_OZETI.pdf` | İçindekiler, kapsam ve ağ yolu, kontrol durumu, doğrulanmış risk dağılımı ve düzeltme öncelikleri. |
+| `TEKNIK_RAPOR.pdf` | Test yöntemi, kontrol matrisi, AD ve ağ bağlamı, cihaz/servis envanteri, ayrıntılı bulgu kartları ve kanıt zinciri. |
+| `REPORT.html` | Çevrimdışı incelenebilen; bulgu, kapsam ve cihaz tablolarıyla yerel kanıtlara bağlantı veren rapor. |
 | `engagement.json`, `steps.json` | Sabitlenen görev kapsamı ve gerçek yürütme günlüğü. |
-| `DEVICE_INVENTORY.json`, `TOOL_ENVIRONMENT.json` | Cihaz sınıflandırması ve araçların kurulum/çalışma durumu. |
+| `DEVICE_INVENTORY.json`, `TOOL_ENVIRONMENT.json` | Cihaz sınıflandırması, host adı ve OS tahmini ile araçların kurulum/çalışma durumu. |
+| `ASSESSMENT_COVERAGE.json` | Otomatik ve manuel kontrollerin yürütme durumu, atlama gerekçesi ve kanıt bağlantıları. |
 | `SHA256SUMS.txt` | Görev dosyalarının SHA-256 özetleri. |
 
 [Yönetici raporu örneği](examples/ORNEK_UBDEN_YONETICI_OZETI.pdf) · [Teknik rapor örneği](examples/ORNEK_UBDEN_TEKNIK_RAPOR.pdf)
 
-Örnek raporlar sentetik verilerle üretilmiştir. Canlı test sonucu içermez.
+Örnek raporlar tamamen sentetik veriyle üretilmiştir. Canlı tarama veya müşteri sonucu içermez.
+
+Rapor motoru doğrulanmış bulguları otomatik gözlemlerden ayrı tutar. Bulgu kartları önem derecesi, etkilenen varlıklar, erişim noktası, kullanıcı profili, kök neden, tekrar üretim, iş etkisi, düzeltme, yeniden test ve SHA-256 ile doğrulanan birden fazla kanıtı destekler. Servis tespitiyle görülen Telnet, FTP, SMB, RDP ve veritabanı portları doğrudan zafiyet sayılmaz; inceleme adayı olarak kaydedilir. Analist incelemesinde web, ağ, AD, yama, paylaşım, protokol ve kablosuz test başlıkları ayrı durum ve kanıtla takip edilir.
 
 Analist incelemesi ve mevcut görevin yeniden raporlanması Kali içinde yapılır:
 
@@ -94,14 +97,14 @@ ubden-cyber --analyst-review /gorev/klasoru
 ubden-cyber --report-only /gorev/klasoru
 ```
 
-`--report-only` mevcut kanıtlardan raporu yeniden üretir. Analist incelemesinde doğrulanmış bulgular için açıklama, etki, tekrar üretim, düzeltme önerisi ve görev klasöründeki kanıt kaydedilir.
+`--report-only` mevcut kanıtlardan raporu yeniden üretir. Analist incelemesi yeni bulgu ekleme, mevcut bulguyu düzenleme, yeniden test durumunu yazma ve ek kanıt bağlama akışlarını içerir.
 
 ## Kurulum ve ortam yönetimi
 
-Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v4.8.1-wsl.4\ubden-wsl.ps1` konumundadır:
+Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v4.8.2-wsl.1\ubden-wsl.ps1` konumundadır:
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v4.8.1-wsl.4\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v4.8.2-wsl.1\ubden-wsl.ps1'
 & $ubden -Action status
 & $ubden -Action run
 ```
@@ -111,6 +114,6 @@ $ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v4.8.1-wsl.4\ubden-ws
 **Tam WSL imhası:** `destroy`, raporları WSL dışındaki seçilen klasöre SHA-256 ile doğrulayarak aktarır ve açık son onaydan sonra **bilgisayardaki tüm WSL dağıtımlarını**, Ubuntu dahil, kalıcı olarak kaldırır. Bu işlem yalnız tüm WSL ortamının kaldırılması istendiğinde kullanılmalıdır.
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v4.8.1-wsl.4\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v4.8.2-wsl.1\ubden-wsl.ps1'
 & $ubden -Action destroy -ExportTo 'D:\UBDEN-Rapor-Devir'
 ```

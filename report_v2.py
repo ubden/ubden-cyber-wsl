@@ -17,8 +17,11 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, Image, HRFlowable
-from analyst_review import assess, verified_finding, CASES
+from reportlab.platypus.tableofcontents import TableOfContents
+from analyst_review import assess, verified_finding
+from assessment_coverage import build_coverage, write_coverage
 from device_inventory import build_inventory
 
 BASE = Path(__file__).resolve().parent
@@ -28,6 +31,7 @@ TEXT = colors.HexColor('#263249')
 PALE = colors.HexColor('#edf7f8')
 GRAY = colors.HexColor('#65758b')
 SEVERITIES = {'critical':'Kritik','high':'Yüksek','medium':'Orta','low':'Düşük','info':'Bilgi'}
+SEVERITY_COLORS = {'critical':'#9d174d','high':'#d84734','medium':'#e49722','low':'#337ec6','info':'#73859c'}
 pdfmetrics.registerFont(TTFont('DV',str(BASE/'assets'/'DejaVuSans.ttf')))
 pdfmetrics.registerFont(TTFont('DVB',str(BASE/'assets'/'DejaVuSans-Bold.ttf')))
 
@@ -41,6 +45,47 @@ def device_inventory(root):
         return data if isinstance(data,dict) and isinstance(data.get('devices'),list) else {}
     except (OSError,ValueError):
         return {}
+
+def network_rows(meta):
+    snapshot=meta.get('host_snapshot',{})
+    if not isinstance(snapshot,dict):
+        return []
+    selected=set(meta.get('selected_interfaces',[]))
+    rows=[]
+    for item in snapshot.get('adapters',[]):
+        if not isinstance(item,dict):
+            continue
+        addresses=', '.join(f"{address.get('address','')}/{address.get('prefix','')}"
+                            for address in item.get('addresses',[]) if isinstance(address,dict))
+        routes=[str(route.get('gateway','')) for route in snapshot.get('default_routes',[])
+                if isinstance(route,dict) and route.get('interface_index')==item.get('index')]
+        rows.append({'name':str(item.get('name','')),'status':str(item.get('status','')),
+                     'selected':item.get('index') in selected,'addresses':addresses,
+                     'gateway':', '.join(routes),'dns':', '.join(map(str,item.get('dns',[]))),
+                     'vpn':bool(item.get('is_vpn'))})
+    return rows
+
+def finding_evidence(finding):
+    items=[]
+    if finding.get('evidence'):
+        items.append({'path':str(finding['evidence']), 'caption':'Birincil kanıt',
+                      'sha256':str(finding.get('evidence_sha256',''))})
+    for item in finding.get('evidence_items',[]):
+        if isinstance(item,dict) and item.get('path'):
+            items.append({'path':str(item['path']), 'caption':str(item.get('caption') or 'Ek kanıt'),
+                          'sha256':str(item.get('sha256',''))})
+    return items
+
+def severity_chart(counts, width):
+    drawing=Drawing(width, 69*mm)
+    maximum=max(max(counts.values(),default=0),1)
+    for index,key in enumerate(SEVERITIES):
+        y=(4-index)*12.5*mm+3*mm
+        drawing.add(String(0,y,SEVERITIES[key],fontName='DV',fontSize=8,fillColor=TEXT))
+        drawing.add(Rect(27*mm,y-2*mm,(width-46*mm)*counts[key]/maximum,6.5*mm,
+                         fillColor=colors.HexColor(SEVERITY_COLORS[key]),strokeColor=None))
+        drawing.add(String(width-14*mm,y,str(counts[key]),fontName='DVB',fontSize=9,fillColor=NAVY))
+    return drawing
 
 def evidence_link(root, value):
     """Link only existing files inside the run; never trust a recorded path as a URL."""
@@ -221,6 +266,12 @@ def styles():
     s.add(ParagraphStyle(name='SubX',fontName='DVB',fontSize=10.5,leading=15,textColor=NAVY,spaceBefore=12,spaceAfter=5,keepWithNext=True))
     s.add(ParagraphStyle(name='BodyX',fontName='DV',fontSize=9,leading=14,textColor=TEXT,spaceAfter=8))
     s.add(ParagraphStyle(name='SmallX',fontName='DV',fontSize=7.4,leading=11,textColor=TEXT,spaceAfter=4,wordWrap='CJK'))
+    s.add(ParagraphStyle(name='SmallWhiteX',fontName='DVB',fontSize=7.4,leading=11,textColor=colors.white,spaceAfter=2,wordWrap='CJK'))
+    s.add(ParagraphStyle(name='FindingTitleX',fontName='DVB',fontSize=11,leading=16,textColor=colors.white,
+                         backColor=NAVY,borderPadding=8,spaceBefore=12,spaceAfter=9,keepWithNext=True))
+    s.add(ParagraphStyle(name='TOCTitleX',fontName='DVB',fontSize=19,leading=24,textColor=NAVY,spaceBefore=8,spaceAfter=12))
+    s.add(ParagraphStyle(name='TOCEntryX',fontName='DV',fontSize=9,leading=15,textColor=TEXT,leftIndent=4*mm,
+                         firstLineIndent=-4*mm,spaceBefore=4))
     s.add(ParagraphStyle(name='LabelX',fontName='DVB',fontSize=7.5,leading=12,textColor=GRAY,spaceAfter=3))
     s.add(ParagraphStyle(name='ValueX',fontName='DVB',fontSize=11,leading=15,textColor=NAVY,spaceAfter=8))
     s.add(ParagraphStyle(name='NoticeX',fontName='DVB',fontSize=9,leading=14,textColor=colors.HexColor('#8a5000'),backColor=colors.HexColor('#fff2d4'),borderPadding=9,spaceAfter=12))
@@ -228,6 +279,128 @@ def styles():
 
 def P(value, style, limit=5000):
     return Paragraph(safe(str(value)[:limit]).replace('\n','<br/>'),style)
+
+def grid_table(rows, widths, header=True):
+    table=Table(rows,colWidths=widths,repeatRows=1 if header else 0,hAlign='LEFT')
+    commands=[('VALIGN',(0,0),(-1,-1),'TOP'),
+              ('GRID',(0,0),(-1,-1),.3,colors.HexColor('#dce5eb')),
+              ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),7),
+              ('TOPPADDING',(0,0),(-1,-1),6),('BOTTOMPADDING',(0,0),(-1,-1),6)]
+    if header:
+        commands.extend([('BACKGROUND',(0,0),(-1,0),NAVY),
+                         ('TEXTCOLOR',(0,0),(-1,0),colors.white)])
+    table.setStyle(TableStyle(commands))
+    return table
+
+def coverage_story(root,meta,steps,review,st,width,executive):
+    ledger=build_coverage(root,meta,steps,review)
+    result=[P('Test kapsamı ve yürütme durumu',st['SectionX']),
+            P('Bir kontrolün çalışmış olması bir zafiyet bulunduğunu veya kontrolün tüm senaryolarının tamamlandığını göstermez. Durumlar gerçek adım ve analist kanıt kayıtlarından hesaplanır.',st['BodyX'])]
+    totals=ledger['counts']
+    result.append(P(' · '.join(f'{label}: {totals[label]}' for label in totals),st['SmallX']))
+    controls=ledger['controls'] if not executive else [r for r in ledger['controls'] if r['status']!='kayıt yok']
+    if controls:
+        headings=('Kontrol','Durum','Yürütme / gerekçe')
+        rows=[[P(x,st['SmallWhiteX']) for x in headings]]
+        for row in controls:
+            reason=row['reason'] or (f"{row['executed']}/{row['attempted']} kayıtlı adım" if row['attempted'] else 'Bu görevde yürütme kaydı yok')
+            rows.append([P(f"{row['id']} · {row['title']}",st['SmallX'],limit=120),
+                         P(row['status'],st['SmallX']),P(reason,st['SmallX'],limit=180)])
+        result.append(grid_table(rows,[width*.34,width*.15,width*.51]))
+    result.append(P('Tam kontrol matrisi ve adım bağlantıları: ASSESSMENT_COVERAGE.json / steps.json.',st['SmallX']))
+    return result
+
+def network_story(meta,st,width):
+    rows=network_rows(meta)
+    if not rows:
+        return []
+    result=[P('Windows ağ yolları',st['SectionX']),
+            P('Adaptör ve alt ağ görünürlüğü hedef yetkisinin yerine geçmez. Seçilen yol, görevdeki kapsamla ayrıca eşleştirilir.',st['BodyX'])]
+    cells=[[P(x,st['SmallWhiteX']) for x in ('Adaptör / durum','IP ve ağ','Ağ geçidi / DNS')]]
+    for row in rows:
+        cells.append([P(row['name']+(' · seçili' if row['selected'] else '')+
+                        (' · VPN' if row['vpn'] else '')+' / '+row['status'],st['SmallX'],limit=150),
+                      P(row['addresses'] or 'IP yok',st['SmallX'],limit=180),
+                      P('GW: '+(row['gateway'] or '—')+'\nDNS: '+(row['dns'] or '—'),st['SmallX'],limit=180)])
+    result.append(grid_table(cells,[width*.30,width*.30,width*.40]))
+    return result
+
+def ad_result(root):
+    try:
+        value=json.loads((root/'AD_ASSESSMENT.json').read_text(encoding='utf-8'))
+        return value if isinstance(value,dict) else {}
+    except (OSError,ValueError):
+        return {}
+
+def ad_story(root,st,width):
+    ad=ad_result(root)
+    if not ad:
+        return []
+    result=[P('Etki alanı değerlendirmesi',st['SectionX']),
+            P(f"Durum: {ad.get('status','?')} · Kaynak: {ad.get('source','?')} · Alan: {ad.get('domain','?')} · DC: {ad.get('domain_controller',ad.get('dc','?'))}",st['BodyX'])]
+    if ad.get('reason'):
+        result.append(P('Sınır / hata: '+str(ad['reason']),st['SmallX']))
+    inventory=ad.get('inventory',{})
+    if isinstance(inventory,dict) and inventory:
+        cells=[[P(x,st['SmallWhiteX']) for x in ('Nesne türü','Gözlenen sayı','Sorgu sınırı')]]
+        for kind,item in inventory.items():
+            if isinstance(item,dict):
+                cells.append([P(kind,st['SmallX']),P(item.get('observed_count','?'),st['SmallX']),
+                              P(item.get('truncated_at','?'),st['SmallX'])])
+        result.append(grid_table(cells,[width*.45,width*.25,width*.30]))
+    if ad.get('forest') or ad.get('domain_mode'):
+        result.append(P(f"Orman: {ad.get('forest','?')} · Orman modu: {ad.get('forest_mode','?')} · Alan modu: {ad.get('domain_mode','?')}",st['SmallX']))
+    if ad.get('dc_dns_records'):
+        result.append(P('DC DNS kayıtları: '+', '.join(str(x.get('name',''))+':'+str(x.get('port',''))
+                     for x in ad['dc_dns_records'] if isinstance(x,dict)),st['SmallX']))
+    result.append(P('Bu bölüm dizin envanteridir. Ayrıcalık, parola ilkesi ve paylaşım izinleri ancak ayrıca kaydedilen kontrollerle değerlendirilmiş sayılır.',st['SmallX']))
+    return result
+
+def finding_story(root,f,st,width):
+    result=[P(f"{f['id']}  ·  {f['title']}",st['FindingTitleX'])]
+    metadata=[('Önem derecesi',SEVERITIES.get(f.get('severity'),'Bilgi')),
+              ('Durum',f.get('status','')),('Etkilenen varlık',f.get('asset','')),
+              ('Diğer etkilenenler',', '.join(f.get('affected_assets',[]))),
+              ('Kategori',f.get('category','')),('Erişim noktası',f.get('access_point','')),
+              ('Kullanıcı profili',f.get('user_profile','')),('Kök neden',f.get('root_cause','')),
+              ('CVSS / referans', ' · '.join(x for x in (f.get('cvss',''),f.get('reference','')) if x))]
+    rows=[[P(label,st['LabelX']),P(value,st['SmallX'],limit=250)]
+          for label,value in metadata if value]
+    result.append(grid_table(rows,[width*.28,width*.72],header=False))
+    for label,key in (('Bulgu açıklaması','description'),('Tekrar üretim ve doğrulama','reproduction'),
+                      ('İş etkisi','impact'),('Düzeltme önerisi','recommendation'),
+                      ('Düzeltme önceliği','remediation_priority'),('Yeniden test','retest_status')):
+        if f.get(key):
+            result.extend([P(label,st['SubX']),P(f[key],st['BodyX'])])
+    if f.get('reviewed_by'):
+        result.append(P('Doğrulayan analist: '+f['reviewed_by'],st['SmallX']))
+    evidence_items=finding_evidence(f)
+    result.append(P('Kanıt zinciri',st['SubX']))
+    if not evidence_items:
+        result.append(P('Kanıt dosyası kaydedilmedi.',st['SmallX']))
+    for item in evidence_items:
+        result.append(P(f"{item['caption']}: {item['path']}"+
+                        (f" · SHA-256: {item['sha256']}" if item['sha256'] else ''),st['SmallX']))
+    if f.get('status')=='doğrulandı':
+        from analyst_review import evidence
+        from PIL import Image as PILImage
+        for item in evidence_items[:2]:
+            path=root/item['path']
+            try:
+                if path.suffix.lower() not in ('.png','.jpg','.jpeg') or evidence(root,item['path'])!=item['sha256']:
+                    continue
+                with PILImage.open(path) as picture:
+                    picture.verify()
+                with PILImage.open(path) as picture:
+                    if picture.width*picture.height>25_000_000:
+                        continue
+                    scale=min((width-10*mm)/picture.width,90*mm/picture.height)
+                    result.append(Image(str(path),width=picture.width*scale,height=picture.height*scale))
+                    result.append(Spacer(1,3*mm))
+            except (OSError,ValueError):
+                continue
+    result.append(Spacer(1,6*mm))
+    return result
 
 def read_data(root):
     meta=json.loads((root/'engagement.json').read_text(encoding='utf-8'))
@@ -254,6 +427,33 @@ def read_data(root):
     findings=[]
     # Non-intrusive header observations are review candidates, never confirmed vulnerabilities.
     observations=[]
+    service_candidates={
+        21:('FTP servisi erişilebilir','info','FTP komut kanalı şifrelenmemiş olabilir. Anonim erişim, veri aktarımı veya kimlik bilgisi gözlenmedi.','Servis yapılandırmasına göre kimlik ve veri gizliliği etkilenebilir.','FTP gerekmiyorsa kapatın; gerekiyorsa FTPS/SFTP ve erişim sınırlarını doğrulayın.'),
+        23:('Telnet servisi erişilebilir','medium','TCP/23 açık göründü. Etkileşimli oturum, şifreleme eksikliği ve kimlik doğrulama ayrıca doğrulanmalıdır.','Telnet kullanılıyorsa oturum ve kimlik bilgileri korunmasız iletilebilir.','Telnet ihtiyacını kaldırıp SSH veya eşdeğer şifreli yönetim yoluna geçin.'),
+        445:('SMB servisi erişilebilir','info','TCP/445 açık göründü. Paylaşım izinleri, SMB sürümü ve imzalama denetlenmedi.','İzin veya sürüm hatası varsa dosya erişimi ve kimlik doğrulama etkilenebilir.','Paylaşım ve erişim izinlerini, SMBv1 durumunu ve imzalama politikasını doğrulayın.'),
+        3389:('RDP servisi erişilebilir','info','TCP/3389 açık göründü. Ağ segmenti, NLA, MFA ve hesap kilitlenme politikası doğrulanmadı.','Erişim sınırları zayıfsa uzak yönetim saldırı yüzeyi artabilir.','RDP erişimini yetkili yönetim ağlarıyla sınırlayın; NLA, MFA ve günlüklemeyi doğrulayın.'),
+        1433:('Veritabanı servisi erişilebilir','info','TCP/1433 açık göründü. Kimlik doğrulama ve veritabanı izinleri sınanmadı.','Yanlış yapılandırma varsa veritabanı erişimi mümkün olabilir.','Dinleme arayüzünü, ağ erişim listesini, sürümü ve en az yetki ilkesini doğrulayın.'),
+        3306:('Veritabanı servisi erişilebilir','info','TCP/3306 açık göründü. Kimlik doğrulama ve veritabanı izinleri sınanmadı.','Yanlış yapılandırma varsa veritabanı erişimi mümkün olabilir.','Dinleme arayüzünü, ağ erişim listesini, sürümü ve en az yetki ilkesini doğrulayın.'),
+    }
+    for host in hosts:
+        for port in host['ports']:
+            if port.get('protocol')!='tcp' or not str(port.get('port','')).isdigit():
+                continue
+            number=int(port['port'])
+            service=str(port.get('service','')).lower()
+            expected={21:('ftp',),23:('telnet',),445:('microsoft-ds','smb'),
+                      3389:('ms-wbt-server','rdp'),1433:('ms-sql-s','mssql'),
+                      3306:('mysql',)}.get(number,())
+            if service and not any(name in service for name in expected):
+                continue
+            profile=service_candidates.get(number)
+            if profile:
+                title,severity,description,impact,recommendation=profile
+                if not service:
+                    title=f'TCP/{number} üzerinde servis erişilebilir (tür doğrulanmadı)'
+                observations.append({'title':title,'severity':severity,'asset':host['ip']+':'+port['port'],
+                                     'description':description,'impact':impact,'recommendation':recommendation,
+                                     'evidence':host['evidence']})
     for path in sorted((root/'targets').glob('*/raw/headers_*_*.txt')) if (root/'targets').exists() else []:
         body=path.read_text(encoding='utf-8',errors='replace')[:16384]
         statuses=[int(x) for x in re.findall(r'(?im)^HTTP/\S+\s+(\d{3})',body)]
@@ -324,7 +524,7 @@ def read_data(root):
         findings.append({'id':f'OBS-{i:03d}','status':'taslak','source':'Otomatik gözlem','reference':'','cvss':'',**item})
     for i,item in enumerate(review.get('findings',[]),1):
         if not isinstance(item,dict): continue
-        finding={'id':str(item.get('id') or f'PX-{i:03d}'),'title':str(item.get('title') or 'Başlıksız bulgu'), 'severity':str(item.get('severity') or 'info').lower(), 'status':str(item.get('status') or 'taslak').lower(), 'asset':str(item.get('asset') or ''), 'description':str(item.get('description') or ''), 'impact':str(item.get('impact') or ''), 'recommendation':str(item.get('recommendation') or ''), 'evidence':str(item.get('evidence') or ''), 'reference':str(item.get('reference') or ''), 'cvss':str(item.get('cvss') or ''), 'reproduction':str(item.get('reproduction') or ''), 'reviewed_by':str(item.get('reviewed_by') or ''), 'source':'Analist'}
+        finding={'id':str(item.get('id') or f'PX-{i:03d}'),'title':str(item.get('title') or 'Başlıksız bulgu'), 'severity':str(item.get('severity') or 'info').lower(), 'status':str(item.get('status') or 'taslak').lower(), 'asset':str(item.get('asset') or ''), 'affected_assets':[str(x) for x in item.get('affected_assets',[]) if isinstance(x,str)] if isinstance(item.get('affected_assets',[]),list) else [], 'description':str(item.get('description') or ''), 'impact':str(item.get('impact') or ''), 'recommendation':str(item.get('recommendation') or ''), 'evidence':str(item.get('evidence') or ''), 'evidence_sha256':str(item.get('evidence_sha256') or ''), 'evidence_items':item.get('evidence_items',[]) if isinstance(item.get('evidence_items',[]),list) else [], 'reference':str(item.get('reference') or ''), 'cvss':str(item.get('cvss') or ''), 'reproduction':str(item.get('reproduction') or ''), 'reviewed_by':str(item.get('reviewed_by') or ''), 'category':str(item.get('category') or ''), 'access_point':str(item.get('access_point') or ''), 'user_profile':str(item.get('user_profile') or ''), 'root_cause':str(item.get('root_cause') or ''), 'remediation_priority':str(item.get('remediation_priority') or ''), 'retest_status':str(item.get('retest_status') or ''), 'disposition_reason':str(item.get('disposition_reason') or ''), 'source':'Analist'}
         if finding['severity'] not in SEVERITIES: finding['severity']='info'
         if finding['status'] not in ('doğrulandı','taslak','yanlış pozitif','risk kabul edildi'): finding['status']='taslak'
         if finding['status']=='doğrulandı' and not verified_finding(root,item):
@@ -344,9 +544,20 @@ def footer(canvas,doc):
     canvas.drawRightString(w-18*mm,13*mm,f'Sayfa {doc.page}')
     canvas.restoreState()
 
+class ReportDocument(BaseDocTemplate):
+    def beforeDocument(self):
+        self._section_index=0
+
+    def afterFlowable(self,flowable):
+        if isinstance(flowable,Paragraph) and flowable.style.name=='SectionX':
+            self._section_index+=1
+            key=f'ubden-section-{self._section_index}'
+            self.canv.bookmarkPage(key)
+            self.notify('TOCEntry',(0,flowable.getPlainText(),self.page,key))
+
 def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
     st=styles()
-    doc=BaseDocTemplate(str(root/filename),pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=23*mm,bottomMargin=22*mm,title='UBDEN Cyber Security Systems | Güvenlik Değerlendirmesi',author=meta.get('tester') or 'Test ekibi belirtilmedi')
+    doc=ReportDocument(str(root/filename),pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=23*mm,bottomMargin=22*mm,title='UBDEN Cyber Security Systems | Güvenlik Değerlendirmesi',author=meta.get('tester') or 'Test ekibi belirtilmedi')
     frame=Frame(doc.leftMargin,doc.bottomMargin,doc.width,doc.height,id='normal')
     doc.addPageTemplates(PageTemplate(id='main',frames=frame,onPage=footer))
     story=[]
@@ -363,6 +574,11 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
     for key,value in [('MÜŞTERİ',meta.get('client')),('PROJE',meta.get('project')),('ÜRÜN',meta.get('product','UBDEN Cyber Security Systems')),('RAPOR TARİHİ',meta.get('finished_at',meta.get('started_at'))),('YETKİ REFERANSI',meta.get('authorization_reference')),('TEST SORUMLUSU',meta.get('tester')),('KAYIT KİMLİĞİ',meta.get('id'))]:
         story += [P(key,st['LabelX']),P(value,st['ValueX'])]
     story += [Spacer(1,10*mm),P('GİZLİ • Müşteri ve görevlendirilmiş ekip ile sınırlı dağıtım',st['NoticeX']),PageBreak()]
+    toc=TableOfContents()
+    toc.levelStyles=[st['TOCEntryX']]
+    story.extend([P('İçindekiler',st['TOCTitleX']),
+                  P('Aşağıdaki bölümler yalnız bu görevde kaydedilen kapsam ve kanıtlara göre oluşturulur.',st['BodyX']),
+                  toc,PageBreak()])
     confirmed=[f for f in findings if f['status']=='doğrulandı']
     state=assess(root,review)
     pending=[f for f in findings if f['status']=='taslak']
@@ -377,7 +593,10 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
         story.append(P(line,st['SmallX']))
     profile=meta.get('profile','external')
     coverage={'external':'DNS, servis keşfi, HTTP başlıkları, TLS','web':'Web portları, HTTP başlıkları, OPTIONS, TLS','network':'Servis keşfi, seçilmiş Nmap NSE kontrolleri','full':'DNS, servis, HTTP, TLS, OPTIONS ve seçilmiş NSE kontrolleri'}.get(profile,'Bilinmiyor')
-    story.append(P(f'Otomatik kapsam ({profile}): {coverage}. Manuel test kayıtları: '+('tamamlandı' if state['complete'] else 'eksik veya inceleme bekliyor')+'.',st['BodyX']))
+    story.append(P(f'Planlanan otomatik profil ({profile}): {coverage}. Gerçek yürütme durumu aşağıdaki kontrol matrisinde gösterilir. Manuel test kayıtları: '+('tamamlandı' if state['complete'] else 'eksik veya inceleme bekliyor')+'.',st['BodyX']))
+    story.extend(network_story(meta,st,doc.width))
+    story.extend(ad_story(root,st,doc.width))
+    story.extend(coverage_story(root,meta,steps,review,st,doc.width,executive))
     discovery=discovery_summaries(root)
     if discovery:
         story.append(P('CIDR host keşfi',st['SectionX']))
@@ -415,15 +634,23 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
     cells=[[P(x,st['SmallX']) for x in ('Kritik','Yüksek','Orta','Düşük','Bilgi')],[P(str(counts[x]),st['ValueX']) for x in SEVERITIES]]
     t=Table(cells,colWidths=[doc.width/5]*5)
     t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),PALE),('BOX',(0,0),(-1,-1),0.5,TEAL),('VALIGN',(0,0),(-1,-1),'MIDDLE'),('LEFTPADDING',(0,0),(-1,-1),10),('TOPPADDING',(0,0),(-1,-1),8)]))
-    story += [t,Spacer(1,8*mm),P(f'Doğrulanmayı bekleyen bulgu: {len(pending)}. Tamamlanan adım: {sum(s.get("status")=="ok" for s in steps)}. Hatalı/eksik/atlanan adım: {sum(s.get("status") not in ("ok","excluded") for s in steps)}.',st['BodyX'])]
+    story += [t,Spacer(1,5*mm)]
+    if confirmed:
+        story.append(severity_chart(counts,doc.width))
+    story.append(P(f'Doğrulanmayı bekleyen bulgu: {len(pending)}. Tamamlanan adım: {sum(s.get("status")=="ok" for s in steps)}. Hatalı/eksik/atlanan adım: {sum(s.get("status") not in ("ok","excluded") for s in steps)}.',st['BodyX']))
     story += [P('Yönetici değerlendirmesi',st['SectionX']),P(review.get('analyst_summary') or 'Analist değerlendirmesi henüz eklenmedi. Teslim öncesi iş etkisi, öncelik ve önerilen aksiyonlar doğrulanmalıdır.',st['BodyX'])]
     story.append(P('Önerilen yaklaşım',st['SectionX']))
     story.append(P('Doğrulanmış bulguları önce iş etkisine göre önceliklendirin. Her düzeltmeden sonra aynı hedefte yeniden test yapın. Kapsam dışındaki varlıklar veya çalışmayan kontroller için ayrı çalışma planlayın.',st['BodyX']))
     if executive:
         story += [P('Doğrulanmış bulgu listesi',st['SectionX'])]
         if not confirmed: story.append(P('Henüz analist onaylı bulgu bulunmuyor.',st['BodyX']))
-        for f in confirmed:
-            story += [P(f"{f['id']} | {SEVERITIES[f['severity']]} | {f['title']}",st['SubX']),P(f"Varlık: {f['asset']} | İş etkisi: {f['impact']} | Öneri: {f['recommendation']}",st['BodyX'])]
+        else:
+            summary=[[P(x,st['SmallWhiteX']) for x in ('ID / önem','Bulgu ve varlık','Önerilen ilk aksiyon')]]
+            for f in confirmed:
+                summary.append([P(f"{f['id']}\n{SEVERITIES[f['severity']]}",st['SmallX']),
+                                P(f"{f['title']}\n{f['asset']}",st['SmallX'],limit=220),
+                                P(f.get('remediation_priority') or f.get('recommendation'),st['SmallX'],limit=220)])
+            story.append(grid_table(summary,[doc.width*.17,doc.width*.39,doc.width*.44]))
         if devices and devices.get('devices'):
             story.append(P('Cihaz görünürlüğü ve aksiyonlar',st['SectionX']))
             story.append(P('Aşağıdaki cihaz türleri otomatik sınıflandırma adaylarıdır. Yüksek güven puanı dahi cihaz kimliğinin veya bir açığın insan tarafından doğrulandığı anlamına gelmez.',st['BodyX']))
@@ -448,9 +675,9 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
         for case in meta.get('role_scenarios',[]):
             attempt=[s for s in steps if str(s.get('step','')).startswith('role_'+str(case.get('id'))+'_')]
             story.append(P(f"{case.get('id')} | {case.get('kind')} | {case.get('owner')} → {case.get('challenger')} | HTTPS GET {case.get('target')}:{case.get('port')}{case.get('path')} | Durum: {', '.join(x.get('status','?') for x in attempt) or 'atlanmış'}",st['SmallX']))
-        for code,title in CASES:
-            row=next((c for c in review.get('cases',[]) if isinstance(c,dict) and c.get('id')==code),{})
-            story.append(P(f"{code} | {title} | {row.get('state','bekliyor')} | {row.get('note','') or 'Sonuç yok'} | Kanıt: {row.get('evidence','yok') or 'yok'} | SHA-256: {row.get('sha256','yok') or 'yok'}",st['SmallX']))
+        for row in review.get('cases',[]):
+            if isinstance(row,dict):
+                story.append(P(f"{row.get('id','?')} | {row.get('title','')} | {row.get('state','bekliyor')} | {row.get('note','') or 'Sonuç yok'} | Kanıt: {row.get('evidence','yok') or 'yok'} | SHA-256: {row.get('sha256','yok') or 'yok'}",st['SmallX']))
         for issue in state['errors'][:10]:
             story.append(P('Kayıt doğrulama uyarısı: '+issue,st['SmallX']))
         rows=tool_rows(root,steps)
@@ -484,25 +711,54 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
                 story.append(table)
         if devices:
             story.append(P('Cihaz kimliği ve sınıflandırma',st['SectionX']))
+            summary=[[P(x,st['SmallWhiteX']) for x in ('Cihaz sınıfı adayı','Adres sayısı')]]
+            summary.extend([[P(label,st['SmallX']),P(count,st['SmallX'])]
+                            for label,count in sorted(devices.get('categories',{}).items(),key=lambda row:(-row[1],row[0]))])
+            story.append(grid_table(summary,[doc.width*.72,doc.width*.28]))
+            story.append(P('Cihaz envanteri matrisi',st['SubX']))
+            device_cells=[[P(x,st['SmallWhiteX']) for x in ('IP / ad','Sınıf / üretici','MAC / OS tahmini','Açık servisler')]]
+            for item in devices['devices']:
+                device_cells.append([
+                    P(item.get('ip','')+'\n'+(', '.join(item.get('hostnames',[])) or 'ad yok'),st['SmallX'],limit=150),
+                    P(item.get('category','')+'\n'+item.get('vendor',''),st['SmallX'],limit=150),
+                    P((item.get('mac') or 'MAC yok')+'\n'+(', '.join(x.get('name','') for x in item.get('os_matches',[])) or 'OS tahmini yok'),st['SmallX'],limit=150),
+                    P(', '.join(f"{p.get('port')}/{p.get('protocol')} {p.get('service')}" for p in item.get('ports',[])) or 'açık port yok',st['SmallX'],limit=170)])
+            story.append(grid_table(device_cells,[doc.width*.23,doc.width*.27,doc.width*.25,doc.width*.25]))
+            if devices.get('services'):
+                story.append(P('Servis dağılımı',st['SubX']))
+                service_cells=[[P(x,st['SmallWhiteX']) for x in ('Port / protokol / servis','Adres sayısı')]]
+                service_cells.extend([[P(name,st['SmallX']),P(count,st['SmallX'])]
+                                      for name,count in sorted(devices['services'].items(),key=lambda row:(-row[1],row[0]))])
+                story.append(grid_table(service_cells,[doc.width*.76,doc.width*.24]))
             for item in devices['devices']:
                 story.append(P(f"{item.get('ip')} | {item.get('category')} | güven: {item.get('confidence')}",st['SubX']))
-                story.append(P(f"MAC: {item.get('mac') or 'görülmedi'} ({item.get('mac_source')}); üretici: {item.get('vendor')} ({item.get('vendor_source')}); kanıt: {item.get('evidence')}",st['SmallX']))
+                story.append(P(f"Ad: {', '.join(item.get('hostnames',[])) or 'görülmedi'}; OS tahmini: {', '.join(x.get('name','')+' (%'+x.get('accuracy','?')+')' for x in item.get('os_matches',[])) or 'yok'}; MAC: {item.get('mac') or 'görülmedi'} ({item.get('mac_source')}); üretici: {item.get('vendor')} ({item.get('vendor_source')}); kanıt: {item.get('evidence')}",st['SmallX']))
                 for clue in (item.get('signals',[])+item.get('notices',[])+item.get('review_notes',[]))[:12]:
                     story.append(P('• '+str(clue),st['SmallX']))
             if devices.get('parse_errors'):
                 story.append(P('Okunamayan XML: '+', '.join(devices['parse_errors'][:8]),st['SmallX']))
-        story.append(P('Bulgu detayları',st['SectionX']))
-        if not findings: story.append(P('Henüz analist tarafından eklenmiş bulgu yok.',st['BodyX']))
-        for f in findings:
-            story.append(P(f"{f['id']}  |  {f['title']}",st['SubX']))
-            for key,val in [('Kaynak',f.get('source')),('Şiddet',SEVERITIES.get(f.get('severity'),'Bilgi')),('Durum',f.get('status')),('Varlık',f.get('asset')),('CVSS',f.get('cvss')),('Açıklama',f.get('description')),('Tekrar üretim',f.get('reproduction')),('Doğrulayan',f.get('reviewed_by')),('İş etkisi',f.get('impact')),('Öneri',f.get('recommendation')),('Kanıt',f.get('evidence')),('Referans',f.get('reference'))]:
-                if val: story.append(P(f'{key}: {val}',st['SmallX']))
+        story.append(P('Doğrulanmış bulgular ve kanıtları',st['SectionX']))
+        if not confirmed: story.append(P('Analist tarafından doğrulanmış bulgu kaydedilmedi.',st['BodyX']))
+        for f in confirmed:
+            story.extend(finding_story(root,f,st,doc.width))
+        story.append(P('İnceleme gerektiren gözlemler',st['SectionX']))
+        story.append(P('Bu kayıtlar otomatik eşleşme veya kanıtı henüz doğrulanmamış analist notudur. Aşağıdaki önem derecesi yalnız inceleme önceliği içindir.',st['BodyX']))
+        if not pending: story.append(P('Açık inceleme adayı yok.',st['BodyX']))
+        for f in pending:
+            story.extend(finding_story(root,f,st,doc.width))
+        disposed=[f for f in findings if f['status'] in ('yanlış pozitif','risk kabul edildi')]
+        if disposed:
+            story.append(P('Kapatılan veya kabul edilen kayıtlar',st['SectionX']))
+            cells=[[P(x,st['SmallWhiteX']) for x in ('ID / varlık','Durum','Gerekçe')]]
+            cells.extend([[P(f['id']+' · '+f['asset'],st['SmallX']),P(f['status'],st['SmallX']),
+                           P(f.get('disposition_reason') or f.get('description'),st['SmallX'],limit=300)] for f in disposed])
+            story.append(grid_table(cells,[doc.width*.28,doc.width*.20,doc.width*.52]))
         story.append(P('Adım günlüğü ve kanıt zinciri',st['SectionX']))
         story.append(P('Her otomatik adımın durumu ve çıktı SHA-256 özeti steps.json içinde bulunur. Rapor üretiminde kanıt dosyaları değiştirilmez. Tüm kanıtlar hassas kabul edilmeli ve erişimi sınırlandırılmalıdır.',st['BodyX']))
         for entry in steps:
             story.append(P(f"{entry.get('step','?')} | {entry.get('status','?')} | {entry.get('seconds','?')} sn | {entry.get('output',entry.get('detail',''))} | SHA-256: {entry.get('sha256','yok')}",st['SmallX']))
         story.append(P('Sınırlar ve takip: DNS değişiklikleri, erişilemeyen servisler, güvenlik cihazları, hız sınırları ve eksik araçlar görünürlüğü etkileyebilir. Hatalı veya zaman aşımına uğrayan adımlardan önce kapsam ve bakım penceresini yeniden doğrulayın. Düzeltme ve yeniden test tarihlerini müşteriyle kararlaştırın.',st['SmallX']))
-    doc.build(story)
+    doc.multiBuild(story)
 
 def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
     state=assess(root,review)
@@ -516,15 +772,25 @@ def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
     pdf_notice=('PDF üretim hatası: '+', '.join(f'{name}: {reason}' for name,reason in report_errors.items())) if report_errors else ''
     def li(v): return f'<li>{safe(v)}</li>'
     rows=''.join(f'<tr><td><a href="#bulgu-{i}">{safe(f.get("id"))}</a></td><td>{safe(f.get("title"))}</td><td>{safe(SEVERITIES.get(f.get("severity"),"Bilgi"))}</td><td>{safe(f.get("status"))}</td><td>{safe(f.get("asset"))}</td><td>{evidence_link(root,f.get("evidence"))}</td></tr>' for i,f in enumerate(findings,1))
-    detail_fields=(('Kaynak','source'),('Durum','status'),('Varlık','asset'),('CVSS','cvss'),('Açıklama','description'),('Tekrar üretim','reproduction'),('Doğrulayan','reviewed_by'),('İş etkisi','impact'),('Öneri','recommendation'),('Referans','reference'))
-    finding_details=''.join(f'<section class="finding" id="bulgu-{i}"><h3>{safe(f.get("id"))} · {safe(f.get("title"))}</h3><p><b>Şiddet:</b> {safe(SEVERITIES.get(f.get("severity"),"Bilgi"))}</p>'+''.join(f'<p><b>{label}:</b> {safe(f.get(key))}</p>' for label,key in detail_fields if f.get(key))+f'<p><b>Kanıt:</b> {evidence_link(root,f.get("evidence")) or "Belirtilmedi"}</p></section>' for i,f in enumerate(findings,1))
+    detail_fields=(('Kaynak','source'),('Durum','status'),('Varlık','asset'),('Diğer etkilenenler','affected_assets'),('Kategori','category'),('Erişim noktası','access_point'),('Kullanıcı profili','user_profile'),('Kök neden','root_cause'),('CVSS','cvss'),('Açıklama','description'),('Tekrar üretim','reproduction'),('Doğrulayan','reviewed_by'),('İş etkisi','impact'),('Düzeltme önerisi','recommendation'),('Düzeltme önceliği','remediation_priority'),('Yeniden test','retest_status'),('Kapatma / kabul gerekçesi','disposition_reason'),('Referans','reference'))
+    finding_details=''.join(
+        f'<section class="finding" id="bulgu-{i}"><h3>{safe(f.get("id"))} · {safe(f.get("title"))}</h3>'
+        f'<p><b>Şiddet:</b> {safe(SEVERITIES.get(f.get("severity"),"Bilgi"))} · <b>Doğrulama:</b> {safe(f.get("status"))}</p>'+
+        ''.join(f'<p><b>{label}:</b> {safe(", ".join(f[key]) if isinstance(f.get(key),list) else f.get(key))}</p>' for label,key in detail_fields if f.get(key))+
+        '<h4>Kanıt zinciri</h4><ul>'+''.join('<li>'+safe(item['caption'])+': '+evidence_link(root,item['path'])+
+        (' · SHA-256 '+safe(item['sha256']) if item['sha256'] else '')+'</li>' for item in finding_evidence(f))+'</ul></section>'
+        for i,f in enumerate(findings,1))
     inventory=''.join(f'<tr><td>{safe(h.get("ip"))}</td><td>{safe(", ".join(str(p.get("port",""))+"/"+str(p.get("service","")) for p in h.get("ports",[])))}</td><td>{evidence_link(root,h.get("evidence"))}</td></tr>' for h in hosts)
     devices=device_inventory(root)
     device_rows=''.join('<tr>'+
-        ''.join(f'<td>{safe(value)}</td>' for value in (item.get('ip'),item.get('mac') or 'görülmedi',item.get('vendor'),item.get('category'),item.get('confidence')))+
+        ''.join(f'<td>{safe(value)}</td>' for value in (item.get('ip'),', '.join(item.get('hostnames',[])) or '—',
+                ', '.join(x.get('name','')+' (%'+x.get('accuracy','?')+')' for x in item.get('os_matches',[])) or '—',
+                item.get('mac') or 'görülmedi',item.get('vendor'),item.get('category'),item.get('confidence')))+
         '<td>'+safe(' · '.join(item.get('signals',[])+item.get('notices',[])+item.get('review_notes',[])))+'</td><td>'+evidence_link(root,item.get('evidence'))+'</td></tr>'
         for item in devices.get('devices',[]))
-    device_html=('<h2>Cihaz ve MAC envanteri</h2><p>'+safe(devices.get('limits'))+'</p><p>Adres: '+safe(devices.get('host_count'))+' · MAC görülen: '+safe(devices.get('mac_count'))+' · Belirsiz sınıf: '+safe(devices.get('unknown_count'))+'</p><p>OUI kaynakları: '+safe(', '.join(devices.get('oui_sources',[])) or 'yüklenemedi')+'</p><p><a href="DEVICE_INVENTORY.json">Makine tarafından okunabilir envanter (JSON)</a></p><table><thead><tr><th>IP</th><th>MAC</th><th>Üretici</th><th>Cihaz adayı</th><th>Güven</th><th>Gerekçe ve inceleme</th><th>Kanıt</th></tr></thead><tbody>'+device_rows+'</tbody></table>') if devices else ''
+    category_rows=''.join(f'<tr><td>{safe(name)}</td><td>{count}</td></tr>' for name,count in sorted(devices.get('categories',{}).items(),key=lambda row:(-row[1],row[0])))
+    service_rows=''.join(f'<tr><td>{safe(name)}</td><td>{count}</td></tr>' for name,count in sorted(devices.get('services',{}).items(),key=lambda row:(-row[1],row[0])))
+    device_html=('<h2>Cihaz ve MAC envanteri</h2><p>'+safe(devices.get('limits'))+'</p><p>Adres: '+safe(devices.get('host_count'))+' · MAC görülen: '+safe(devices.get('mac_count'))+' · Belirsiz sınıf: '+safe(devices.get('unknown_count'))+'</p><p>OUI kaynakları: '+safe(', '.join(devices.get('oui_sources',[])) or 'yüklenemedi')+'</p><p><a href="DEVICE_INVENTORY.json">Makine tarafından okunabilir envanter (JSON)</a></p><h3>Cihaz sınıfları</h3><table><thead><tr><th>Sınıf adayı</th><th>Adres</th></tr></thead><tbody>'+category_rows+'</tbody></table><h3>Servis dağılımı</h3><table><thead><tr><th>Port / servis</th><th>Adres</th></tr></thead><tbody>'+service_rows+'</tbody></table><h3>Cihaz kayıtları</h3><table><thead><tr><th>IP</th><th>Ad</th><th>OS tahmini</th><th>MAC</th><th>Üretici</th><th>Cihaz adayı</th><th>Güven</th><th>Gerekçe ve inceleme</th><th>Kanıt</th></tr></thead><tbody>'+device_rows+'</tbody></table>') if devices else ''
     event=''.join(f'<tr><td>{safe(s.get("step"))}</td><td>{safe(s.get("status"))}</td><td>{safe(s.get("seconds"))}</td><td>{evidence_link(root,s.get("output"))}<br>{safe(s.get("detail"))}</td></tr>' for s in steps)
     profile=meta.get('profile','external')
     coverage={'external':'DNS/WHOIS, TCP servis, HTTP başlıkları ve TLS','web':'Web portları, HTTP başlıkları, OPTIONS ve TLS','network':'TCP servis ve seçilmiş NSE kontrolleri','full':'DNS/WHOIS, TCP servis, HTTP/TLS, OPTIONS ve seçilmiş NSE kontrolleri'}.get(profile,'Bilinmiyor')
@@ -542,15 +808,41 @@ def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
                 for row in inventory)+'</tbody></table>') if inventory else ''
     review_table='<h2>Manuel test kayıtları</h2><p>Durum: '+('analist kayıtları tamamlandı' if state['complete'] else 'eksik veya inceleme bekliyor')+f"; bekleyen başlık: {state['pending']}; inceleyen: {safe(state['reviewer'] or 'yok')}</p><table><thead><tr><th>Test</th><th>Durum</th><th>Sonuç</th><th>Kanıt / SHA-256</th></tr></thead><tbody>"
     review_table+=''.join(f'<tr><td>{safe(c.get("id"))}</td><td>{safe(c.get("state"))}</td><td>{safe(c.get("note"))}</td><td>{evidence_link(root,c.get("evidence"))} / {safe(c.get("sha256"))}</td></tr>' for c in review.get('cases',[]) if isinstance(c,dict))+'</tbody></table>'
-    ai_html='<h2>Claude AI analist taslağı</h2><p>'+safe(ai_note)+'</p><p>'+safe(ai_text or 'Yorum yok')+'</p>'
+    ai_html=('<h2>AI analist taslağı</h2><p>'+safe(ai_note)+'</p><p>'+safe(ai_text or 'Yorum yok')+'</p>') if (root/'AI_DURUM.json').is_file() else ''
     discover_html=('<h2>CIDR host keşfi</h2><table><thead><tr><th>Ağ</th><th>Durum</th><th>Uygun IP</th><th>Yanıt veren</th><th>Yanıt vermeyen</th></tr></thead><tbody>'+
         ''.join('<tr>'+''.join(f'<td>{safe(value)}</td>' for value in (x.get('target'),{'partial':'kısmi','ok':'tamamlandı','no_hosts':'yanıt alınamadı','error':'hata'}.get(x.get('status'),x.get('status')),x.get('eligible_count'),x.get('responding_count'),x.get('unresponsive_count') if x.get('unresponsive_count') is not None else 'bilinmiyor'))+'</tr>' for x in discovery)+'</tbody></table>'+
         ''.join(f'<p>{safe(discovery_line(x))} Kanıt: {evidence_link(root,x.get("evidence"))}</p>' for x in discovery)) if discovery else ''
     snmp_html=('<h2>SNMPv1 / public kontrolü</h2><p>Her izinli yanıt veren adrese tek salt okunur sysDescr isteği gönderildi. Yanıt yokluğu servisin güvenli olduğunu kanıtlamaz.</p><table><thead><tr><th>Hedef</th><th>Denendi</th><th>Yanıt</th><th>Kanıt</th></tr></thead><tbody>'+
         ''.join(f'<tr><td>{safe(x.get("target"))}</td><td>{safe(x.get("tested_count"))}</td><td>{safe(x.get("responding_count"))}</td><td>{evidence_link(root,x.get("evidence"))}</td></tr>' for x in snmp)+'</tbody></table>') if snmp else ''
+    ledger=build_coverage(root,meta,steps,review)
+    coverage_html='<h2>Test kapsamı ve yürütme matrisi</h2><p>'+safe(ledger['meaning'])+'</p><p>'+safe(' · '.join(f'{key}: {value}' for key,value in ledger['counts'].items()))+'</p><p><a href="ASSESSMENT_COVERAGE.json">Kapsam kaydı (JSON)</a></p><table><thead><tr><th>Grup</th><th>Kontrol</th><th>Durum</th><th>Yürütme / gerekçe</th><th>Kanıt</th></tr></thead><tbody>'+''.join(
+        '<tr><td>'+safe(row['group'])+'</td><td>'+safe(row['id']+' · '+row['title'])+'</td><td>'+safe(row['status'])+'</td><td>'+safe(row['reason'] or f"{row['executed']}/{row['attempted']} kayıtlı adım")+'</td><td>'+'; '.join(evidence_link(root,path) for path in row['evidence'])+'</td></tr>'
+        for row in ledger['controls'])+'</tbody></table>'
+    network_html='<h2>Windows ağ yolları</h2><p>Adaptör bilgileri görev kaydıdır; hedef yetkisi yalnızca açık kapsamdan gelir.</p><table><thead><tr><th>Adaptör</th><th>Durum</th><th>Adresler</th><th>Ağ geçidi</th><th>DNS</th></tr></thead><tbody>'+''.join(
+        '<tr><td>'+safe(row['name']+(' · seçili' if row['selected'] else '')+(' · VPN' if row['vpn'] else ''))+'</td><td>'+safe(row['status'])+'</td><td>'+safe(row['addresses'])+'</td><td>'+safe(row['gateway'])+'</td><td>'+safe(row['dns'])+'</td></tr>'
+        for row in network_rows(meta))+'</tbody></table>' if network_rows(meta) else ''
+    ad=ad_result(root)
+    ad_html=('<h2>Etki alanı değerlendirmesi</h2><p>Durum: '+safe(ad.get('status'))+
+        ' · Alan: '+safe(ad.get('domain'))+' · DC: '+safe(ad.get('domain_controller',ad.get('dc')))+
+        ' · Kaynak: '+safe(ad.get('source'))+'</p><p>'+safe(ad.get('reason'))+'</p>'+
+        '<table><thead><tr><th>Nesne türü</th><th>Gözlenen</th><th>Sorgu sınırı</th></tr></thead><tbody>'+
+        ''.join('<tr><td>'+safe(kind)+'</td><td>'+safe(item.get('observed_count'))+'</td><td>'+safe(item.get('truncated_at'))+'</td></tr>'
+                for kind,item in ad.get('inventory',{}).items() if isinstance(item,dict))+'</tbody></table>'+
+        '<p>Dizin sayımları yetki, parola ilkesi veya paylaşım izni testinin tamamlandığını göstermez.</p>') if ad else ''
+    counts=Counter(f['severity'] for f in findings if f['status']=='doğrulandı')
+    risk_html='<h2>Doğrulanmış bulguların önem dağılımı</h2><div class="riskbars">'+''.join(
+        f'<div class="riskrow"><span>{safe(label)}</span><div class="risktrack"><i style="width:{max(2,round(100*counts[key]/max(max(counts.values(),default=0),1)))}%;background:{SEVERITY_COLORS[key]}"></i></div><b>{counts[key]}</b></div>'
+        for key,label in SEVERITIES.items())+'</div>'
+    priority_html='<h2>Düzeltme öncelikleri</h2><table><thead><tr><th>ID</th><th>Önem</th><th>Varlık</th><th>İlk aksiyon</th></tr></thead><tbody>'+''.join(
+        '<tr><td>'+safe(f['id'])+'</td><td>'+safe(SEVERITIES[f['severity']])+'</td><td>'+safe(f['asset'])+'</td><td>'+safe(f.get('remediation_priority') or f.get('recommendation'))+'</td></tr>'
+        for f in findings if f['status']=='doğrulandı')+'</tbody></table>'
     doc=doc.replace('</p><h2>Yönetici özeti</h2>',f'</p><p class="notice">{safe(auth_note)}</p><p class="notice">{safe(role_note)}</p>{platform_html}{discover_html}{snmp_html}{ai_html}{review_table}{inventory_html}<h2>Yönetici özeti</h2>')
+    doc=doc.replace('<h2>Analist bulguları</h2>',risk_html+priority_html+network_html+ad_html+coverage_html+'<h2>Analist bulguları</h2>')
     doc=doc.replace('<h2>Çalışma günlüğü</h2>',device_html+'<h2>Çalışma günlüğü</h2>')
+    doc=doc.replace('</style></head>', '.riskbars{max-width:700px}.riskrow{display:grid;grid-template-columns:70px 1fr 32px;gap:12px;align-items:center;margin:7px 0}.risktrack{height:12px;background:#edf1f6;border-radius:7px}.risktrack i{height:12px;display:block;border-radius:7px}</style></head>')
     doc=doc.replace('Kimlik doğrulamalı iş akışları ve manuel istismar doğrulaması bu çıktıda yer almaz.', 'Otomatik kimlikli erişim kontrolü yalnızca durum kodlarını karşılaştırır. İnsan tarafından yapılan testler yalnızca yukarıdaki manuel test kayıtlarıyla belgelenmişse bu rapora dahildir.')
+    if not (root/'MANUEL_TEST_PLANI.md').is_file():
+        doc=doc.replace('<a href="MANUEL_TEST_PLANI.md">manuel test planını</a>','manuel test planını')
     (root/'REPORT.html').write_text(doc,encoding='utf-8')
     asset=root/'assets';asset.mkdir(exist_ok=True)
     if logo():
@@ -566,6 +858,7 @@ def main():
             build_inventory(root,meta,neighbours={})
         except (OSError,ValueError) as exc:
             print(f'Cihaz envanteri eski kanıttan çıkarılamadı: {exc}',file=sys.stderr)
+    write_coverage(root,meta,steps,review)
     errors={}
     for filename,executive in (('YONETICI_OZETI.pdf',True),('TEKNIK_RAPOR.pdf',False)):
         temp=root/('.'+filename+'.pending.pdf')

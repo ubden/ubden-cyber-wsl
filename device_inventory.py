@@ -205,7 +205,13 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                     svc=port.find('service')
                     ports.append({'port':port.get('portid',''),'protocol':port.get('protocol',''),
                                   'service':svc.get('name','') if svc is not None else '',
-                                  'product':svc.get('product','')[:100] if svc is not None else ''})
+                                  'product':svc.get('product','')[:100] if svc is not None else '',
+                                  'version':svc.get('version','')[:70] if svc is not None else '',
+                                  'extra_info':svc.get('extrainfo','')[:100] if svc is not None else ''})
+                hostnames=[name.get('name','')[:120] for name in host.findall('./hostnames/hostname')
+                           if name.get('name')][:5]
+                os_matches=[{'name': item.get('name','')[:120], 'accuracy': item.get('accuracy','')}
+                            for item in host.findall('./os/osmatch')][:3]
                 xml_mac=next((normalize_mac(a.get('addr')) for a in host.findall('./address') if a.get('addrtype')=='mac'), '')
                 neighbour=neighbours.get(ip,{})
                 neighbour_mac=normalize_mac(neighbour.get('mac'))
@@ -237,6 +243,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                              'interface':neighbour.get('device','') if not xml_mac else '',
                              'vendor':vendor,'vendor_source':source,'category':category,
                              'confidence':confidence,'signals':signals,'ports':ports,
+                             'hostnames':hostnames,'os_matches':os_matches,
                              'review_notes':review,'notices':notices,'snmp_sysdescr':snmp_description,
                              'evidence':str(path.relative_to(root))}
     duplicates=defaultdict(list)
@@ -253,6 +260,8 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
              'host_count':len(ordered),'mac_count':sum(bool(row['mac']) for row in ordered),
              'unknown_count':sum(row['category']=='Bilinmiyor' for row in ordered),
              'categories':dict(Counter(row['category'] for row in ordered)),
+             'services':dict(Counter(f"{port['port']}/{port['protocol']} {port['service']}".strip()
+                                     for row in ordered for port in row['ports'])),
              'oui_sources':sources,'neighbour_note':neighbour_error,
              'limits':'MAC yalnızca aynı L2 komşuluğunda gözlenebilir. Üretici donanımın modeli veya güvenlik açığı kanıtı değildir. Kategori ve servisler analist doğrulaması gerektirir.',
              'parse_errors':errors,'devices':ordered}

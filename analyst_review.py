@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-CASES = (
+LEGACY_CASES = (
     ("AUTH", "Kimlik doğrulama ve oturum yaşam döngüsü"),
     ("ROLES", "Dikey yetki: farklı roller ve yönetici işlemleri"),
     ("IDOR", "Yatay yetki: yalnızca test hesaplarına ait nesneler"),
@@ -13,6 +13,20 @@ CASES = (
     ("LOGIC", "İş akışları ve iş kuralları"),
     ("CONFIG", "Yapılandırma, bileşenler ve servis maruziyeti"),
     ("RETEST", "Bulguları tekrar üretme ve düzeltme doğrulaması"),
+)
+CASES = LEGACY_CASES + (
+    ("SCOPE", "Kapsam, erişim yolları ve hariçlerin doğrulanması"),
+    ("ASSET", "Varlık rolleri, sahibi ve ağ segmenti doğrulaması"),
+    ("AD", "Etki alanı, ayrıcalıklı gruplar ve yetki sınırları"),
+    ("AD-POLICY", "Parola, kilitlenme ve kimlik doğrulama ilkeleri"),
+    ("SHARES", "SMB/NFS paylaşımları ve erişim izinleri"),
+    ("DATABASE", "Veritabanı erişimi, sürümü ve yapılandırması"),
+    ("PATCH", "İşletim sistemi, hipervizör ve üçüncü taraf yama durumu"),
+    ("PROTOCOL", "Eski protokoller ve güvensiz uzaktan yönetim"),
+    ("SNMP", "SNMP sürümü, toplulukları ve erişim sınırları"),
+    ("PERIMETER", "Ağ geçidi, VPN, güvenlik duvarı ve segmentasyon"),
+    ("WIRELESS", "Yetkili kablosuz ağ ve test istemcisi kontrolleri"),
+    ("EVIDENCE", "Bulgu kanıtı, etki ve yeniden test kaydı"),
 )
 STATES = {"bekliyor", "test edildi", "bulgu", "uygulanamaz"}
 
@@ -25,7 +39,7 @@ def save(root, data):
 
 
 def initial():
-    return {"schema": 2, "analyst_summary": "", "reviewer": "", "approved_at": "",
+    return {"schema": 3, "analyst_summary": "", "reviewer": "", "approved_at": "",
             "cases": [{"id": code, "title": title, "state": "bekliyor", "note": "", "evidence": "", "sha256": ""} for code, title in CASES],
             "findings": []}
 
@@ -49,7 +63,7 @@ def evidence(root, name):
 def assess(root, data):
     """Evaluate recorded coverage; never infer a completed pentest from scan status."""
     cases = data.get("cases") or []
-    expected = {code for code, _ in CASES}
+    expected = {code for code, _ in (CASES if int(data.get("schema", 2) or 2) >= 3 else LEGACY_CASES)}
     covered = set()
     errors = []
     for case in cases:
@@ -86,6 +100,16 @@ def assess(root, data):
                 errors.append(f"{fid}: kanıt özeti uyuşmuyor")
         except ValueError as exc:
             errors.append(f"{fid}: {exc}")
+        for extra in item.get("evidence_items", []) if isinstance(item.get("evidence_items", []), list) else []:
+            if not isinstance(extra, dict):
+                errors.append(f"{fid}: ek kanıt kaydı geçersiz")
+                continue
+            try:
+                digest = evidence(root, str(extra.get("path", "")))
+                if digest != extra.get("sha256"):
+                    errors.append(f"{fid}: ek kanıt özeti uyuşmuyor")
+            except ValueError as exc:
+                errors.append(f"{fid}: {exc}")
     if not str(data.get("analyst_summary", "")).strip():
         errors.append("Analist yönetici özeti eksik")
     approved = bool(data.get("reviewer") and data.get("approved_at"))
@@ -101,7 +125,12 @@ def verified_finding(root, item):
            ("title", "asset", "description", "impact", "recommendation", "reproduction", "reviewed_by")):
         return False
     try:
-        return evidence(root, str(item.get("evidence", ""))) == item.get("evidence_sha256")
+        if evidence(root, str(item.get("evidence", ""))) != item.get("evidence_sha256"):
+            return False
+        extras = item.get("evidence_items", [])
+        return (isinstance(extras, list) and all(isinstance(entry, dict) and
+                evidence(root, str(entry.get("path", ""))) == entry.get("sha256")
+                for entry in extras))
     except ValueError:
         return False
 
@@ -109,6 +138,54 @@ def verified_finding(root, item):
 def prompt(label, default=""):
     value = input(f"{label}" + (f" [{default}]" if default else "") + ": ").strip()
     return value or default
+
+
+FINDING_FIELDS = (
+    ("title", "Bulgu adı"), ("asset", "Birincil kapsamdaki varlık"),
+    ("severity", "Seviye [critical/high/medium/low/info]"),
+    ("category", "Bulgu kategorisi"), ("access_point", "Erişim noktası / servis"),
+    ("user_profile", "Etkilenen kullanıcı profili / rol"),
+    ("root_cause", "Kök neden / yapılandırma sebebi"),
+    ("description", "Teknik açıklama"),
+    ("reproduction", "Tekrar üretim yöntemi (sır içermez)"),
+    ("impact", "Gerçek iş etkisi"), ("recommendation", "Düzeltme önerisi"),
+    ("remediation_priority", "Düzeltme önceliği ve önerilen sorumlu"),
+    ("retest_status", "Yeniden test durumu"),
+    ("disposition_reason", "Kapatma / risk kabulü gerekçesi (varsa)"),
+    ("reference", "CVE / CWE / üretici referansı (varsa)"),
+    ("reviewed_by", "Doğrulayan analist"),
+)
+
+
+def edit_finding(root, item):
+    for key, label in FINDING_FIELDS:
+        item[key] = prompt(label, item.get(key, ""))
+    existing = item.get("affected_assets", [])
+    if not isinstance(existing, list):
+        existing = []
+    raw_assets = prompt("Diğer etkilenen varlıklar (virgülle ayrılmış)", ", ".join(existing))
+    item["affected_assets"] = [value.strip() for value in raw_assets.split(",") if value.strip()]
+    item["evidence"] = prompt("Görev klasöründeki birincil kanıt dosyası", item.get("evidence", ""))
+    try:
+        item["evidence_sha256"] = evidence(root, item["evidence"])
+        if item["severity"] not in {"critical", "high", "medium", "low", "info"}:
+            raise ValueError("Geçersiz seviye")
+        extras = item.setdefault("evidence_items", [])
+        if not isinstance(extras, list):
+            extras = item["evidence_items"] = []
+        while prompt("Ek kanıt dosyası ekle? e/H", "H").lower() == "e":
+            path = prompt("Görev klasöründeki ek kanıt yolu")
+            extras.append({"path": path, "caption": prompt("Kanıt açıklaması"),
+                           "sha256": evidence(root, path)})
+        requested = prompt("Durum [doğrulandı/taslak/yanlış pozitif/risk kabul edildi]",
+                           item.get("status") if item.get("status") not in ("taslak", "doğrulandı") else "doğrulandı")
+        if requested not in {"doğrulandı", "taslak", "yanlış pozitif", "risk kabul edildi"}:
+            raise ValueError("Geçersiz bulgu durumu")
+        item["status"] = requested if requested != "doğrulandı" or verified_finding(root, {**item, "status": "doğrulandı"}) else "taslak"
+    except ValueError as exc:
+        item["status"] = "taslak"
+        print("Taslak kaydedildi:", exc)
+    return item
 
 
 def guided(root):
@@ -139,22 +216,12 @@ def guided(root):
                 print("Kanıt kabul edilmedi:", exc)
                 case.update(evidence="", sha256="")
     data["analyst_summary"] = prompt("Yönetici özeti", data.get("analyst_summary", ""))
-    while prompt("Yeni doğrulanmış bulgu ekle? e/H", "H").lower() == "e":
+    for item in data.get("findings", []):
+        if isinstance(item, dict) and prompt(f"{item.get('id','?')} · {item.get('title','?')} bulgusunu düzenle? e/H", "H").lower() == "e":
+            edit_finding(root, item)
+    while prompt("Yeni bulgu kaydı ekle? e/H", "H").lower() == "e":
         item = {"id": f"PX-{len(data.get('findings', [])) + 1:03d}", "status": "taslak"}
-        for key, label in (("title", "Bulgu adı"), ("asset", "Kapsamdaki varlık"),
-                           ("severity", "Seviye [critical/high/medium/low/info]"),
-                           ("description", "Teknik açıklama"), ("reproduction", "Tekrar üretim yöntemi (sır içermez)"),
-                           ("impact", "Gerçek iş etkisi"), ("recommendation", "Düzeltme önerisi"),
-                           ("reviewed_by", "Doğrulayan analist")):
-            item[key] = prompt(label)
-        item["evidence"] = prompt("Görev klasöründeki yerel kanıt dosyası")
-        try:
-            item["evidence_sha256"] = evidence(root, item["evidence"])
-            if item["severity"] not in {"critical", "high", "medium", "low", "info"}:
-                raise ValueError("Geçersiz seviye")
-            item["status"] = "doğrulandı"
-        except ValueError as exc:
-            print("Taslak kaydedildi:", exc)
+        edit_finding(root, item)
         data.setdefault("findings", []).append(item)
     # Any edit invalidates an earlier approval until re-acknowledged.
     data.update(reviewer="", approved_at="")

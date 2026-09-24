@@ -23,7 +23,7 @@ from xml.etree import ElementTree as ET
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from tui import Console, UI
-from analyst_review import guided
+from analyst_review import guided, CASES
 from ai_analyst import analyze_run, ai_input
 from device_inventory import build_inventory
 from tool_catalog import CATALOG, inventory as catalog_inventory, version as package_version
@@ -34,7 +34,7 @@ from supplemental_scans import run as run_supplemental
 from credential_assessment import run_ssh as run_ssh_passwords
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "4.8.1"
+VERSION = "4.8.2"
 BASELINE = ROOT / "templates" / "baseline"
 HOST_RE = re.compile(r"(?=^.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))+", re.I)
 WEB_NEXT_AT = 0.0
@@ -534,15 +534,15 @@ Ham çerezleri, tokenları, parolaları ve kişisel verileri kanıt dosyasına k
 AI analist önerileri insan doğrulaması olmadan güvenlik açığı olarak raporlanmaz.
 İşlem yapan iş mantığı testlerini yalnızca açık izinle analist yürütür.
 
-- [ ] Kimlik doğrulama ve oturum yönetimi: geçerli test hesapları ile rol geçişleri
-- [ ] Yetkilendirme: kullanıcı/rol bazlı erişim, IDOR ve nesne seviyesinde yetki
-- [ ] Girdi işleme: güvenli, kontrollü doğrulama; veri değiştiren testler için ayrı izin
-- [ ] İş mantığı: sipariş, ödeme, kota, iş akışı ve işlem sırası kontrolleri
-- [ ] API: uç noktalar, oran limitleri, yetki ve veri minimizasyonu
-- [ ] İç ağ: yerinde/uzaktan erişim, ağ segmentleri ve kimlik altyapısı
-- [ ] Bulguların manuel doğrulanması, etkisi ve yeniden test
+## Kontrol başlıkları
 
-Kaynak: https://owasp.org/www-project-web-security-testing-guide/
+Her başlık için `bekliyor`, `test edildi`, `bulgu` veya gerekçeli
+`uygulanamaz` durumu, sonuç notu ve kanıt kaydedilir.
+
+""" + "\n".join(f"- [ ] {code}: {title}" for code,title in CASES) + """
+
+Web ve API testleri için OWASP WSTG; ağ ve kimlik altyapısı için kurumun onaylı
+test yöntemi ve değişiklik penceresi esas alınır.
 """
 
 def open_tcp_ports(xml_path):
