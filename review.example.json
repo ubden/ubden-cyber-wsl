@@ -1,0 +1,73 @@
+{
+  "schema": 2,
+  "analyst_summary": "",
+  "reviewer": "",
+  "approved_at": "",
+  "cases": [
+    {
+      "id": "AUTH",
+      "title": "Kimlik doğrulama ve oturum yaşam döngüsü",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "ROLES",
+      "title": "Dikey yetki: farklı roller ve yönetici işlemleri",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "IDOR",
+      "title": "Yatay yetki: yalnızca test hesaplarına ait nesneler",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "INPUT",
+      "title": "Girdi doğrulama ve çıktı kodlama",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "API",
+      "title": "API uçları ve yetki matrisi",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "LOGIC",
+      "title": "İş akışları ve iş kuralları",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "CONFIG",
+      "title": "Yapılandırma, bileşenler ve servis maruziyeti",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    },
+    {
+      "id": "RETEST",
+      "title": "Bulguları tekrar üretme ve düzeltme doğrulaması",
+      "state": "bekliyor",
+      "note": "",
+      "evidence": "",
+      "sha256": ""
+    }
+  ],
+  "findings": []
+}

@@ -1,0 +1,20 @@
+id: ubden-actuator-env-public
+info:
+  name: "Actuator ortam ayarları dışarıdan görülebiliyor olabilir"
+  author: ubden
+  severity: medium
+  description: "Açıkça seçilen hedefe tek GET isteği gönderir. Eşleşme analist doğrulaması bekleyen gözlemdir."
+  tags: ubden,baseline,readonly
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/env"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - "propertySources"

@@ -1,0 +1,20 @@
+id: ubden-pprof-public
+info:
+  name: "Go pprof tanılama sayfası açık olabilir"
+  author: ubden
+  severity: medium
+  description: "Açıkça seçilen hedefe tek GET isteği gönderir. Eşleşme analist doğrulaması bekleyen gözlemdir."
+  tags: ubden,baseline,readonly
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/debug/pprof/"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - "Types of profiles available"

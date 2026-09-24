@@ -1,0 +1,21 @@
+id: ubden-referrer-policy-missing
+info:
+  name: "HTTPS yanıtında Referrer-Policy başlığı yok"
+  author: ubden
+  severity: info
+  description: "HTTPS kök yoluna tek HEAD isteği gönderir. Eşleşme analist doğrulaması bekleyen gözlemdir."
+  tags: ubden,baseline,readonly
+http:
+  - method: HEAD
+    path:
+      - "{{BaseURL}}/"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: regex
+        part: header
+        regex:
+          - "(?im)^referrer-policy\\s*:"
+        negative: true

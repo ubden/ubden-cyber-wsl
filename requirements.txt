@@ -1,0 +1,5 @@
+reportlab>=4.2,<5
+Pillow>=10,<13
+ldap3>=2.9,<3
+paramiko>=3.4,<5
+PyYAML>=6,<7

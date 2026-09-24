@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=UBDEN Cyber Security Systems
+Comment=Yetkili güvenlik değerlendirme sihirbazı
+Exec=/opt/ubden-cyber/desktop-session.sh
+Icon=/opt/ubden-cyber/assets/ubden-logo.png
+Terminal=true
+Categories=Network;Security;

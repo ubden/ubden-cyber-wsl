@@ -1,0 +1,20 @@
+id: ubden-git-head-public
+info:
+  name: ".git/HEAD dışarıdan okunabiliyor"
+  author: ubden
+  severity: medium
+  description: "Açıkça seçilen hedefe tek GET isteği gönderir. Eşleşme analist doğrulaması bekleyen gözlemdir."
+  tags: ubden,baseline,readonly
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.git/HEAD"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: regex
+        part: body
+        regex:
+          - "(?m)^ref: refs/heads/[A-Za-z0-9._/-]+"

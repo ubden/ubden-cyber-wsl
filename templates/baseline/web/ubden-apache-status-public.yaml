@@ -1,0 +1,20 @@
+id: ubden-apache-status-public
+info:
+  name: "Apache sunucu durum sayfası açık olabilir"
+  author: ubden
+  severity: low
+  description: "Açıkça seçilen hedefe tek GET isteği gönderir. Eşleşme analist doğrulaması bekleyen gözlemdir."
+  tags: ubden,baseline,readonly
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/server-status"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - "Apache Server Status for"
