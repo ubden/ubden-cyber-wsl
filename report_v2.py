@@ -590,6 +590,8 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
     story.append(P('Yetkili hedefler: '+', '.join(meta.get('targets',[])),st['BodyX']))
     story.append(P('Hariç tutulanlar: '+(', '.join(meta.get('exclusions',[])) or 'Tanımlanmadı'),st['BodyX']))
     for line in platform_lines(root,meta,steps):
+        if line.startswith(('Windows adaptörleri:', 'Seçilen Windows ağ yolları:')) and network_rows(meta):
+            continue
         story.append(P(line,st['SmallX']))
     profile=meta.get('profile','external')
     coverage={'external':'DNS, servis keşfi, HTTP başlıkları, TLS','web':'Web portları, HTTP başlıkları, OPTIONS, TLS','network':'Servis keşfi, seçilmiş Nmap NSE kontrolleri','full':'DNS, servis, HTTP, TLS, OPTIONS ve seçilmiş NSE kontrolleri'}.get(profile,'Bilinmiyor')
@@ -618,16 +620,20 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
             story.append(P('MAC görülmedi: hedefler yönlendirici arkasında olabilir; üretici/model bu raporda doğrulanmadı.',st['SmallX']))
         flagged=[item for item in devices['devices'] if item.get('notices') or item.get('review_notes')]
         story.append(P(f'MAC belirsizliği veya hizmet inceleme notu bulunan adres: {len(flagged)}. Bu işaretler doğrulanmış zafiyet değildir.',st['BodyX']))
-    story.append(P(auth_summary(meta,steps),st['BodyX']))
+    if meta.get('auth_probes'):
+        story.append(P(auth_summary(meta,steps),st['BodyX']))
     role_note,ai_note,ai_text=advanced_summary(root,meta,steps)
-    story.append(P(role_note,st['BodyX']))
-    story.append(P(ai_note,st['BodyX']))
+    if meta.get('role_scenarios') or any(str(s.get('step','')).startswith('role_') for s in steps):
+        story.append(P(role_note,st['BodyX']))
+    if (root/'AI_DURUM.json').is_file():
+        story.append(P(ai_note,st['BodyX']))
     if ai_text:
         story.append(P('Claude AI analist yorumu — yalnızca taslak',st['SubX']))
         story.append(P(ai_text,st['BodyX'],limit=1200))
     if executive:
         tool_status=tool_rows(root,steps)
-        story.append(P(f'Araç durumu: {sum(x[2]=="Çalıştırıldı" for x in tool_status)} araç için en az bir adım başlatıldı; başarılı ve başarısız adımlar çalışma günlüğünde ayrıdır.',st['BodyX']))
+        if tool_status:
+            story.append(P(f'Araç durumu: {sum(x[2]=="Çalıştırıldı" for x in tool_status)} araç için en az bir adım başlatıldı; başarılı ve başarısız adımlar çalışma günlüğünde ayrıdır.',st['BodyX']))
     if meta.get('nuclei_templates'):
         story.append(P(f"Nuclei şablon kaynağı: {meta.get('nuclei_profile','custom')} | {meta.get('nuclei_template_count','?')} şablon. Sabit içerik özeti nuclei_template_manifest.json içinde kayıtlıdır. Adım durumunu günlükten kontrol edin; eşleşmeler analist doğrulaması bekler.",st['BodyX']))
     story.append(P('Doğrulanmış bulgular',st['SectionX']))
@@ -836,7 +842,10 @@ def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
     priority_html='<h2>Düzeltme öncelikleri</h2><table><thead><tr><th>ID</th><th>Önem</th><th>Varlık</th><th>İlk aksiyon</th></tr></thead><tbody>'+''.join(
         '<tr><td>'+safe(f['id'])+'</td><td>'+safe(SEVERITIES[f['severity']])+'</td><td>'+safe(f['asset'])+'</td><td>'+safe(f.get('remediation_priority') or f.get('recommendation'))+'</td></tr>'
         for f in findings if f['status']=='doğrulandı')+'</tbody></table>'
-    doc=doc.replace('</p><h2>Yönetici özeti</h2>',f'</p><p class="notice">{safe(auth_note)}</p><p class="notice">{safe(role_note)}</p>{platform_html}{discover_html}{snmp_html}{ai_html}{review_table}{inventory_html}<h2>Yönetici özeti</h2>')
+    auth_html=f'<p class="notice">{safe(auth_note)}</p>' if meta.get('auth_probes') else ''
+    role_html=(f'<p class="notice">{safe(role_note)}</p>' if meta.get('role_scenarios') or
+               any(str(s.get('step','')).startswith('role_') for s in steps) else '')
+    doc=doc.replace('</p><h2>Yönetici özeti</h2>',f'</p>{auth_html}{role_html}{platform_html}{discover_html}{snmp_html}{ai_html}{review_table}{inventory_html}<h2>Yönetici özeti</h2>')
     doc=doc.replace('<h2>Analist bulguları</h2>',risk_html+priority_html+network_html+ad_html+coverage_html+'<h2>Analist bulguları</h2>')
     doc=doc.replace('<h2>Çalışma günlüğü</h2>',device_html+'<h2>Çalışma günlüğü</h2>')
     doc=doc.replace('</style></head>', '.riskbars{max-width:700px}.riskrow{display:grid;grid-template-columns:70px 1fr 32px;gap:12px;align-items:center;margin:7px 0}.risktrack{height:12px;background:#edf1f6;border-radius:7px}.risktrack i{height:12px;display:block;border-radius:7px}</style></head>')
