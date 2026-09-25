@@ -32,7 +32,11 @@ PORT_RULES = ((9100,'Yazıcı adayı','Yazıcı servis portu 9100'),
               (631,'Yazıcı adayı','IPP portu 631'),
               (554,'Kamera / medya cihazı adayı','RTSP portu 554'),
               (5060,'IP telefon adayı','SIP portu 5060'),
-              (2049,'Dosya sunucusu adayı','NFS portu 2049'))
+              (2049,'Dosya sunucusu adayı','NFS portu 2049'),
+              (1433,'SQL Server adayı','TDS/SQL Server varsayılan portu 1433'),
+              (3306,'Veritabanı sunucusu adayı','MySQL varsayılan portu 3306'),
+              (5432,'Veritabanı sunucusu adayı','PostgreSQL varsayılan portu 5432'),
+              (1521,'Veritabanı sunucusu adayı','Oracle varsayılan portu 1521'))
 REVIEW_PORTS = {21:'FTP',23:'Telnet',161:'SNMP',445:'SMB',3389:'RDP',5900:'VNC',6379:'Redis',9200:'Elasticsearch'}
 HEX=re.compile(r'^[0-9A-F]{12}$')
 
@@ -47,7 +51,11 @@ def normalize_mac(value):
 def oui_database(paths=None):
     """Use installed Nmap prefixes plus optional offline IEEE MA-L/M/S CSVs."""
     base=Path(__file__).resolve().parent/'data'/'ieee'
-    paths=paths if paths is not None else [Path('/usr/share/nmap/nmap-mac-prefixes'),base/'oui.csv',base/'mam.csv',base/'mas.csv']
+    paths=paths if paths is not None else [
+        Path('/usr/share/nmap/nmap-mac-prefixes'),
+        Path('/usr/share/ieee-data/oui.csv'),Path('/usr/share/ieee-data/mam.csv'),
+        Path('/usr/share/ieee-data/oui36.csv'),
+        base/'oui.csv',base/'mam.csv',base/'mas.csv']
     result={}
     sources=[]
     for path in map(Path,paths):
@@ -173,6 +181,31 @@ def classify(vendor,ports,snmp_description=''):
     return category,('orta' if scores[category]>=2 else 'düşük'),evidence
 
 
+def role_candidates(ports, vendor, gateway=False):
+    """Independent service roles; port-only matches remain candidates."""
+    numbers={int(p['port']) for p in ports if str(p.get('port','')).isdigit()}
+    product=' '.join(str(p.get('product','')) for p in ports).lower()
+    roles=[]
+    def add(name, reason, confidence='düşük'):
+        roles.append({'role':name,'confidence':confidence,'reason':reason})
+    if {88,389}.issubset(numbers) or {88,636}.issubset(numbers):
+        add('Etki alanı denetleyicisi adayı','Kerberos ve LDAP/LDAPS portları birlikte görüldü','orta')
+    if 1433 in numbers or 'microsoft sql server' in product or 'ms-sql' in product:
+        add('SQL Server adayı','TDS/SQL servis izi görüldü')
+    if numbers & {3306,5432,1521,27017,6379,9200}:
+        add('Veritabanı veya veri servisi adayı','Veri servisi portu görüldü')
+    if numbers & {139,445,2049}:
+        add('Dosya/paylaşım sunucusu adayı','SMB veya NFS servisi görüldü')
+    if numbers & {80,443,8080,8443}:
+        add('Web veya yönetim arayüzü adayı','HTTP(S) portu görüldü')
+    if gateway:
+        add('Ağ geçidi','Windows varsayılan rota kaydı ile eşleşti','orta')
+    explicit=' '.join([vendor,product]).lower()
+    if any(label in explicit for label in ('fortinet','fortigate','palo alto','sonicwall','watchguard','sophos firewall')):
+        add('Güvenlik duvarı ürünü adayı','Üretici/servis izi güvenlik duvarı markasıyla eşleşti')
+    return roles
+
+
 def build_inventory(root,meta,neighbours=None,oui_paths=None):
     root=Path(root)
     permitted=allowed_ips(root,meta)
@@ -183,6 +216,9 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
         neighbour_error=''
     devices={}
     errors=[]
+    snapshot=meta.get('host_snapshot') if isinstance(meta.get('host_snapshot'),dict) else {}
+    gateways={str(row.get('gateway')) for row in snapshot.get('default_routes',[])
+              if isinstance(row,dict) and row.get('gateway')}
     for path in sorted((root/'targets').glob('*/raw/nmap_*.xml')) if (root/'targets').exists() else []:
         try:
             tree=ET.parse(path)
@@ -228,6 +264,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                     except (ValueError,OSError,AttributeError):
                         pass
                 category,confidence,signals=classify(vendor,ports,snmp_description)
+                roles=role_candidates(ports,vendor,ip in gateways)
                 notices=[]
                 if xml_mac and neighbour_mac and xml_mac!=neighbour_mac:
                     notices.append('Nmap MAC ve yerel komşu önbelleği uyuşmuyor; MAC doğrulanmalı')
@@ -243,9 +280,34 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                              'interface':neighbour.get('device','') if not xml_mac else '',
                              'vendor':vendor,'vendor_source':source,'category':category,
                              'confidence':confidence,'signals':signals,'ports':ports,
+                             'role_candidates':roles,
                              'hostnames':hostnames,'os_matches':os_matches,
                              'review_notes':review,'notices':notices,'snmp_sysdescr':snmp_description,
                              'evidence':str(path.relative_to(root))}
+    for path in sorted((root/'targets').glob('*/raw/sql_browser_*.json')) if (root/'targets').exists() else []:
+        try:
+            result=json.loads(path.read_text(encoding='utf-8'))
+            ip=str(ipaddress.ip_address(result.get('ip','')))
+            if result.get('status')!='ok' or not result.get('instances') or not permitted(ip):
+                continue
+        except (OSError,ValueError,TypeError,AttributeError):
+            continue
+        record=devices.get(ip)
+        if record is None:
+            record={'ip':ip,'mac':'','mac_source':'yok','interface':'','vendor':'Bilinmiyor',
+                    'vendor_source':'unavailable','category':'SQL Server adayı','confidence':'düşük',
+                    'signals':[],'ports':[],'role_candidates':[],'hostnames':[],
+                    'os_matches':[],'review_notes':[],'notices':['Uzak rota veya L2 komşuluk yok; MAC tespit edilmedi'],
+                    'snmp_sysdescr':'','evidence':str(path.relative_to(root))}
+            devices[ip]=record
+        record['sql_instances']=[{'name':str(item.get('name',''))[:80],
+                                  'tcp_port':item.get('tcp_port'),
+                                  'version':str(item.get('version',''))[:50]}
+                                 for item in result['instances'][:16] if isinstance(item,dict)]
+        if not any(role.get('role')=='SQL Server adayı' for role in record['role_candidates']):
+            record['role_candidates'].append({'role':'SQL Server adayı','confidence':'orta',
+                'reason':'UDP/1434 SQL Browser yanıtında örnek adı görüldü'})
+        record['signals'].append('SQL Browser örnek yanıtı: '+str(path.relative_to(root)))
     duplicates=defaultdict(list)
     for device in devices.values():
         if device['mac']:
@@ -262,6 +324,12 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
              'categories':dict(Counter(row['category'] for row in ordered)),
              'services':dict(Counter(f"{port['port']}/{port['protocol']} {port['service']}".strip()
                                      for row in ordered for port in row['ports'])),
+             'role_counts_lower_bound':dict(Counter(role['role'] for row in ordered
+                                                     for role in row['role_candidates'])),
+             'observed_gateways':[ip for ip in sorted(gateways) if ip in devices],
+             'firewall_identity_status':('aday var; analist doğrulaması gerekir' if any(
+                 role['role']=='Güvenlik duvarı ürünü adayı' for row in ordered
+                 for role in row['role_candidates']) else 'doğrulanmadı'),
              'oui_sources':sources,'neighbour_note':neighbour_error,
              'limits':'MAC yalnızca aynı L2 komşuluğunda gözlenebilir. Üretici donanımın modeli veya güvenlik açığı kanıtı değildir. Kategori ve servisler analist doğrulaması gerektirir.',
              'parse_errors':errors,'devices':ordered}

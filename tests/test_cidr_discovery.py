@@ -14,6 +14,12 @@ from report_v2 import read_data
 class CidrDiscoveryTests(unittest.TestCase):
     META={'profile':'network','exclusions':[],'max_rate':20,'top_ports':100,'nuclei_templates':''}
 
+    def setUp(self):
+        # Service-scan fixtures must never perform the SQL Browser network probe.
+        probe=patch.object(wizard,'discover_sql_browser')
+        probe.start()
+        self.addCleanup(probe.stop)
+
     @staticmethod
     def fake_command(up, calls, fail=False):
         def run(name,argv,folder,events,timeout=900):

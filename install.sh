@@ -63,7 +63,7 @@ if [[ "${1:-}" == --wsl ]]; then
       FAILED+=("$package: kurulum hatası")
     fi
   done < <(python3 "$BASE/tool_catalog.py" --install-candidates)
-  for package in iw usbutils reaver bully ldap-utils smbclient; do
+  for package in iw usbutils reaver bully ldap-utils smbclient wordlists ieee-data; do
     if ! apt-cache policy "$package" | grep -E '/kali[[:space:]]+kali-' >/dev/null; then
       FAILED+=("$package: resmi Kali APT kaynagi yok")
       continue
@@ -109,13 +109,14 @@ if [[ -d "$BASE/data/ieee" ]]; then
   done
 fi
 install -m 0755 "$BASE/start.sh" "$BASE/target_scan.sh" "$BASE/install.sh" "$BASE/desktop-session.sh" "$DEST/"
-install -m 0644 "$BASE/wizard.py" "$BASE/tui.py" "$BASE/analyst_review.py" "$BASE/ai_analyst.py" "$BASE/report_v2.py" "$BASE/device_inventory.py" "$BASE/tool_catalog.py" "$BASE/host_bridge.py" "$BASE/ad_assessment.py" "$BASE/wireless_assessment.py" "$BASE/supplemental_scans.py" "$BASE/credential_assessment.py" "$BASE/README.md" "$BASE/requirements.txt" "$BASE/review.example.json" "$DEST/"
+install -m 0644 "$BASE/wizard.py" "$BASE/tui.py" "$BASE/analyst_review.py" "$BASE/analyst_workplan.py" "$BASE/assessment_coverage.py" "$BASE/ai_analyst.py" "$BASE/report_v2.py" "$BASE/device_inventory.py" "$BASE/ieee_registry.py" "$BASE/sql_discovery.py" "$BASE/tool_catalog.py" "$BASE/host_bridge.py" "$BASE/ad_assessment.py" "$BASE/wireless_assessment.py" "$BASE/supplemental_scans.py" "$BASE/credential_assessment.py" "$BASE/README.md" "$BASE/requirements.txt" "$BASE/review.example.json" "$DEST/"
 install -m 0644 "$BASE/assets/"* "$DEST/assets/"
 install -m 0644 "$BASE/templates/baseline/https/"*.yaml "$DEST/templates/baseline/https/"
 install -m 0644 "$BASE/templates/baseline/web/"*.yaml "$DEST/templates/baseline/web/"
 python3 -m venv "$DEST/.venv"
 "$DEST/.venv/bin/python" -m pip install --disable-pip-version-check -r "$DEST/requirements.txt"
-"$DEST/.venv/bin/python" -m py_compile "$DEST/wizard.py" "$DEST/report_v2.py" "$DEST/analyst_review.py" "$DEST/ai_analyst.py" "$DEST/tui.py" "$DEST/device_inventory.py" "$DEST/tool_catalog.py" "$DEST/host_bridge.py" "$DEST/ad_assessment.py" "$DEST/wireless_assessment.py" "$DEST/supplemental_scans.py" "$DEST/credential_assessment.py"
+"$DEST/.venv/bin/python" -m py_compile "$DEST/wizard.py" "$DEST/report_v2.py" "$DEST/analyst_review.py" "$DEST/analyst_workplan.py" "$DEST/assessment_coverage.py" "$DEST/ai_analyst.py" "$DEST/tui.py" "$DEST/device_inventory.py" "$DEST/ieee_registry.py" "$DEST/sql_discovery.py" "$DEST/tool_catalog.py" "$DEST/host_bridge.py" "$DEST/ad_assessment.py" "$DEST/wireless_assessment.py" "$DEST/supplemental_scans.py" "$DEST/credential_assessment.py"
+python3 "$DEST/ieee_registry.py" "$DEST/data/ieee" || echo '[UYARI] IEEE MAC veri kümeleri alınamadı; yerel Nmap OUI verisi kullanılacak.' >&2
 ln -sfn "$DEST/start.sh" /usr/local/bin/ubden-cyber
 if [[ -d /usr/share/applications ]]; then
   install -m 0644 "$BASE/ubden-cyber.desktop" /usr/share/applications/ubden-cyber.desktop

@@ -36,7 +36,7 @@ def main():
             "profile": "network",
             "max_rate": 250,
             "top_ports": 1000,
-            "tool_version": "UBDEN 4.8.2",
+            "tool_version": "UBDEN 4.8.3",
             "status": "example_only",
             "started_at": "2026-09-24T09:00:00+00:00",
             "finished_at": "2026-09-24T09:30:00+00:00",
@@ -52,11 +52,13 @@ def main():
             '<host><address addr="192.0.2.5" addrtype="ipv4"/>'
             '<address addr="00:0C:29:AA:BB:CC" addrtype="mac"/>'
             '<hostnames><hostname name="example-dc.example.test"/></hostnames>'
-            '<os><osmatch name="Linux (temsili tahmin)" accuracy="87"/></os>'
+            '<os><osmatch name="Windows Server (temsili tahmin)" accuracy="87"/></os>'
             '<ports><port portid="22" protocol="tcp"><state state="open"/>'
             '<service name="ssh" product="OpenSSH"/></port>'
             '<port portid="23" protocol="tcp"><state state="open"/>'
-            '<service name="telnet"/></port></ports></host>'
+            '<service name="telnet"/></port>'
+            '<port portid="88" protocol="tcp"><state state="open"/><service name="kerberos-sec"/></port>'
+            '<port portid="389" protocol="tcp"><state state="open"/><service name="ldap"/></port></ports></host>'
             '<host><address addr="192.0.2.37" addrtype="ipv4"/>'
             '<hostnames><hostname name="example-files.example.test"/></hostnames>'
             '<ports><port portid="445" protocol="tcp"><state state="open"/>'
@@ -68,6 +70,10 @@ def main():
             '<service name="http"/></port>'
             '<port portid="9100" protocol="tcp"><state state="open"/>'
             '<service name="jetdirect"/></port></ports></host>'
+            '<host><address addr="192.0.2.70" addrtype="ipv4"/>'
+            '<hostnames><hostname name="example-sql.example.test"/></hostnames>'
+            '<ports><port portid="1433" protocol="tcp"><state state="open"/>'
+            '<service name="ms-sql-s" product="Microsoft SQL Server"/></port></ports></host>'
             "</nmaprun>", encoding="utf-8"
         )
         proof = raw / "proof-example.txt"
@@ -112,7 +118,7 @@ def main():
             report_v2.main()
         finally:
             sys.argv = original_argv
-        for name in ("YONETICI_OZETI.pdf", "TEKNIK_RAPOR.pdf"):
+        for name in ("YONETICI_OZETI.pdf", "TEKNIK_RAPOR.pdf", "ANALIST_GOREV_RAPORU.pdf"):
             shutil.copy2(root / name, Path(__file__).resolve().parent / f"ORNEK_UBDEN_{name}")
 
 

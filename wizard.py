@@ -32,9 +32,10 @@ from ad_assessment import inspect as inspect_ad
 from wireless_assessment import run as run_wireless, validate as validate_wireless
 from supplemental_scans import run as run_supplemental
 from credential_assessment import run_ssh as run_ssh_passwords
+from sql_discovery import discover as discover_sql_browser
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "4.8.2"
+VERSION = "4.8.3"
 BASELINE = ROOT / "templates" / "baseline"
 HOST_RE = re.compile(r"(?=^.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))+", re.I)
 WEB_NEXT_AT = 0.0
@@ -977,6 +978,7 @@ def scan_target(target, meta, root, events, credentials=(), index=1, total=1,
                     key=safe_filename(ip)
                     command("audit_"+key,["nmap"] + (["-6"] if ":" in ip else []) + ["-Pn","-sT","-sV","-T3","--stats-every","10s","--max-rate",str(meta["max_rate"]),"--max-retries","1","--script-timeout","30s","--host-timeout","5m","--script",scripts,"-p",",".join(map(str,opened)),"-oX",str(raw/("audit_"+key+".xml")),ip],raw,events,360)
     if profile in ('network','full'):
+        discover_sql_browser(assets,raw,events,meta['max_rate'])
         probe_snmp(target,assets,raw,events,meta['max_rate'])
         if 'supplemental_network' in meta.get('enabled_modules',[]):
             run_supplemental(target,assets,discovered_ports,raw,events,command,profile)

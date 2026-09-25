@@ -22,6 +22,7 @@ from reportlab.platypus import BaseDocTemplate, PageTemplate, Frame, Paragraph, 
 from reportlab.platypus.tableofcontents import TableOfContents
 from analyst_review import assess, verified_finding
 from assessment_coverage import build_coverage, write_coverage
+from analyst_workplan import write_plan
 from device_inventory import build_inventory
 
 BASE = Path(__file__).resolve().parent
@@ -544,6 +545,61 @@ def footer(canvas,doc):
     canvas.drawRightString(w-18*mm,13*mm,f'Sayfa {doc.page}')
     canvas.restoreState()
 
+def analyst_pdf(root, filename, plan, meta):
+    st=styles()
+    doc=ReportDocument(str(root/filename),pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,
+        topMargin=23*mm,bottomMargin=22*mm,title='UBDEN | Analist Çalışma Raporu',
+        author=meta.get('tester') or 'UBDEN test ekibi')
+    frame=Frame(doc.leftMargin,doc.bottomMargin,doc.width,doc.height,id='normal')
+    doc.addPageTemplates(PageTemplate(id='main',frames=frame,onPage=footer))
+    story=[Spacer(1,16*mm)]
+    if logo():
+        from PIL import Image as PILImage
+        with PILImage.open(logo()) as im:
+            ratio=im.height/im.width
+        story += [Image(str(logo()),width=60*mm,height=min(60*mm*ratio,25*mm)),Spacer(1,20*mm)]
+    story += [P('Analist Çalışma Raporu',st['CoverTitleX']),
+              HRFlowable(width='100%',thickness=3,color=TEAL,spaceAfter=14)]
+    for label,value in [('MÜŞTERİ',plan['client']),('GÖREV',plan['project']),
+                        ('TEST EKİBİ',meta.get('tester')),('YETKİ REFERANSI',meta.get('authorization_reference')),
+                        ('KAYIT',plan['engagement_id']),('RAPOR TARİHİ',plan['generated_at'])]:
+        story += [P(label,st['LabelX']),P(value,st['ValueX'])]
+    story += [Spacer(1,8*mm),P('GİZLİ • Yalnızca yetkili müşteri ve test ekibi',st['NoticeX']),PageBreak(),
+              P('Çalışma durumu',st['SectionX']),P(plan['note'],st['BodyX']),
+              P(f"Gözlenen adres: {plan['observed_hosts']} · Web: {plan['observed_web_hosts']} · "
+                f"Paylaşım: {plan['observed_share_hosts']} · Veritabanı: {plan['observed_database_hosts']} · "
+                f"Bekleyen analist adımı: {plan['pending_count']}",st['BodyX']),
+              P('Kapsam: '+(', '.join(plan['scope']) or 'Kayıt yok'),st['SmallX']),
+              P('Komutlardaki yer tutucuları yazılı kapsamda bulunan hedeflerle değiştirin. Parola/tokenu komuta veya rapora yazmayın. Canlı giriş ekranında sözlük denemesi yapmayın.',st['NoticeX'])]
+    rows=[[P(x,st['SmallWhiteX']) for x in ('Öncelik','Görev','Durum','Hedef')]]
+    for task in plan['tasks']:
+        rows.append([P(task['priority'],st['SmallX']),P(task['id']+' · '+task['title'],st['SmallX']),
+                     P(task['status'],st['SmallX']),P(', '.join(task['targets'][:3]),st['SmallX'],limit=130)])
+    story += [P('Öncelik sırası',st['SectionX']),grid_table(rows,[doc.width*.12,doc.width*.43,doc.width*.16,doc.width*.29]),PageBreak()]
+    for task in plan['tasks']:
+        story += [P(task['id']+' · '+task['title'],st['SectionX']),
+                  P(f"{task['priority']} · {task['status']} · {task['case']}",st['SmallX']),
+                  P('İlgili varlık: '+(', '.join(task['targets']) or 'müşteri bilgisi bekleniyor'),st['BodyX']),
+                  P('Tetikleyen kayıt: '+task['trigger'],st['BodyX'])]
+        if task['customer_input']:
+            story.append(P('Müşteriden gereken: '+task['customer_input'],st['NoticeX']))
+        if task['review_note']:
+            story.append(P('Analist notu: '+task['review_note'],st['SmallX']))
+        story.append(P('Uygulanacak adımlar',st['SubX']))
+        for index,item in enumerate(task['steps'],1):
+            story.append(P(f'{index}. {item}',st['BodyX']))
+        story.append(P('Alınacak kanıt',st['SubX']))
+        for item in task['evidence_required']:
+            story.append(P('• '+item,st['BodyX']))
+        if task['commands']:
+            story.append(P('Örnek komutlar',st['SubX']))
+            for command in task['commands']:
+                story.append(P(command,st['SmallX'],limit=450))
+        if task['source_evidence']:
+            story.append(P('Mevcut görev kanıtı: '+'; '.join(task['source_evidence']),st['SmallX']))
+        story.append(P(task['completion'],st['SmallX']))
+    doc.build(story)
+
 class ReportDocument(BaseDocTemplate):
     def beforeDocument(self):
         self._section_index=0
@@ -615,6 +671,8 @@ def pdf(root, filename, meta, steps, hosts, findings, review, executive=False):
     if devices:
         story.append(P('Cihaz ve MAC analizi',st['SectionX']))
         story.append(P(f"{devices.get('host_count',0)} adres; MAC görülen {devices.get('mac_count',0)}; sınıfı belirsiz {devices.get('unknown_count',0)}. Kategoriler: "+', '.join(f'{label}: {count}' for label,count in devices.get('categories',{}).items()),st['BodyX']))
+        if devices.get('role_counts_lower_bound'):
+            story.append(P('Gözlenen rol adaylarının alt sınırı: '+', '.join(f'{label}: {count}' for label,count in devices['role_counts_lower_bound'].items())+'. Güvenlik duvarı kimliği: '+devices.get('firewall_identity_status','doğrulanmadı')+'.',st['BodyX']))
         story.append(P(devices.get('limits',''),st['SmallX']))
         if devices.get('mac_count',0)==0:
             story.append(P('MAC görülmedi: hedefler yönlendirici arkasında olabilir; üretici/model bu raporda doğrulanmadı.',st['SmallX']))
@@ -773,7 +831,8 @@ def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
     role_note,ai_note,ai_text=advanced_summary(root,meta,steps)
     report_errors=report_errors or {}
     pdf_links=' · '.join(f'<a href="{name}">{title}</a>' for name,title in
-                       (('YONETICI_OZETI.pdf','Yönetici PDF'),('TEKNIK_RAPOR.pdf','Teknik PDF'))
+                       (('YONETICI_OZETI.pdf','Yönetici PDF'),('TEKNIK_RAPOR.pdf','Teknik PDF'),
+                        ('ANALIST_GOREV_RAPORU.pdf','Analist PDF'))
                        if name not in report_errors and (root/name).is_file())
     pdf_notice=('PDF üretim hatası: '+', '.join(f'{name}: {reason}' for name,reason in report_errors.items())) if report_errors else ''
     def li(v): return f'<li>{safe(v)}</li>'
@@ -792,11 +851,13 @@ def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
         ''.join(f'<td>{safe(value)}</td>' for value in (item.get('ip'),', '.join(item.get('hostnames',[])) or '—',
                 ', '.join(x.get('name','')+' (%'+x.get('accuracy','?')+')' for x in item.get('os_matches',[])) or '—',
                 item.get('mac') or 'görülmedi',item.get('vendor'),item.get('category'),item.get('confidence')))+
-        '<td>'+safe(' · '.join(item.get('signals',[])+item.get('notices',[])+item.get('review_notes',[])))+'</td><td>'+evidence_link(root,item.get('evidence'))+'</td></tr>'
+        '<td>'+safe(' · '.join(item.get('signals',[])+[r.get('role','')+': '+r.get('reason','') for r in item.get('role_candidates',[])]+item.get('notices',[])+item.get('review_notes',[])))+'</td><td>'+evidence_link(root,item.get('evidence'))+'</td></tr>'
         for item in devices.get('devices',[]))
     category_rows=''.join(f'<tr><td>{safe(name)}</td><td>{count}</td></tr>' for name,count in sorted(devices.get('categories',{}).items(),key=lambda row:(-row[1],row[0])))
     service_rows=''.join(f'<tr><td>{safe(name)}</td><td>{count}</td></tr>' for name,count in sorted(devices.get('services',{}).items(),key=lambda row:(-row[1],row[0])))
-    device_html=('<h2>Cihaz ve MAC envanteri</h2><p>'+safe(devices.get('limits'))+'</p><p>Adres: '+safe(devices.get('host_count'))+' · MAC görülen: '+safe(devices.get('mac_count'))+' · Belirsiz sınıf: '+safe(devices.get('unknown_count'))+'</p><p>OUI kaynakları: '+safe(', '.join(devices.get('oui_sources',[])) or 'yüklenemedi')+'</p><p><a href="DEVICE_INVENTORY.json">Makine tarafından okunabilir envanter (JSON)</a></p><h3>Cihaz sınıfları</h3><table><thead><tr><th>Sınıf adayı</th><th>Adres</th></tr></thead><tbody>'+category_rows+'</tbody></table><h3>Servis dağılımı</h3><table><thead><tr><th>Port / servis</th><th>Adres</th></tr></thead><tbody>'+service_rows+'</tbody></table><h3>Cihaz kayıtları</h3><table><thead><tr><th>IP</th><th>Ad</th><th>OS tahmini</th><th>MAC</th><th>Üretici</th><th>Cihaz adayı</th><th>Güven</th><th>Gerekçe ve inceleme</th><th>Kanıt</th></tr></thead><tbody>'+device_rows+'</tbody></table>') if devices else ''
+    device_html=('<h2>Cihaz ve MAC envanteri</h2><p>'+safe(devices.get('limits'))+'</p><p>Adres: '+safe(devices.get('host_count'))+' · MAC görülen: '+safe(devices.get('mac_count'))+' · Belirsiz sınıf: '+safe(devices.get('unknown_count'))+'</p><p>Rol adayları (gözlenen alt sınır): '+safe(', '.join(f'{name}: {count}' for name,count in devices.get('role_counts_lower_bound',{}).items()))+' · Güvenlik duvarı kimliği: '+safe(devices.get('firewall_identity_status','doğrulanmadı'))+'</p><p>OUI kaynakları: '+safe(', '.join(devices.get('oui_sources',[])) or 'yüklenemedi')+'</p><p><a href="DEVICE_INVENTORY.json">Makine tarafından okunabilir envanter (JSON)</a></p><h3>Cihaz sınıfları</h3><table><thead><tr><th>Sınıf adayı</th><th>Adres</th></tr></thead><tbody>'+category_rows+'</tbody></table><h3>Servis dağılımı</h3><table><thead><tr><th>Port / servis</th><th>Adres</th></tr></thead><tbody>'+service_rows+'</tbody></table><h3>Cihaz kayıtları</h3><table><thead><tr><th>IP</th><th>Ad</th><th>OS tahmini</th><th>MAC</th><th>Üretici</th><th>Cihaz adayı</th><th>Güven</th><th>Gerekçe ve inceleme</th><th>Kanıt</th></tr></thead><tbody>'+device_rows+'</tbody></table>') if devices else ''
+    analyst_plan=json.loads((root/'ANALIST_GOREV_RAPORU.json').read_text(encoding='utf-8')) if (root/'ANALIST_GOREV_RAPORU.json').is_file() else {}
+    analyst_html=('<h2>Analist çalışma raporu</h2><p>Bekleyen adım: '+safe(analyst_plan.get('pending_count'))+'. Her adım için hedef, tetikleyen gözlem, müşteri girdisi, uygulanacak kontrol ve kanıt listesi ayrı hazırlanmıştır.</p><p><a href="ANALIST_GOREV_RAPORU.md">Ayrıntılı çalışma ve komut rehberi</a> · <a href="ANALIST_GOREV_RAPORU.json">Yapılandırılmış görevler</a></p><table><thead><tr><th>Öncelik</th><th>Kontrol</th><th>Durum</th><th>Hedef</th></tr></thead><tbody>'+''.join('<tr><td>'+safe(t['priority'])+'</td><td>'+safe(t['id']+' · '+t['title'])+'</td><td>'+safe(t['status'])+'</td><td>'+safe(', '.join(t['targets'][:5]))+'</td></tr>' for t in analyst_plan.get('tasks',[]))+'</tbody></table>') if analyst_plan else ''
     event=''.join(f'<tr><td>{safe(s.get("step"))}</td><td>{safe(s.get("status"))}</td><td>{safe(s.get("seconds"))}</td><td>{evidence_link(root,s.get("output"))}<br>{safe(s.get("detail"))}</td></tr>' for s in steps)
     profile=meta.get('profile','external')
     coverage={'external':'DNS/WHOIS, TCP servis, HTTP başlıkları ve TLS','web':'Web portları, HTTP başlıkları, OPTIONS ve TLS','network':'TCP servis ve seçilmiş NSE kontrolleri','full':'DNS/WHOIS, TCP servis, HTTP/TLS, OPTIONS ve seçilmiş NSE kontrolleri'}.get(profile,'Bilinmiyor')
@@ -846,7 +907,7 @@ def html_report(root,meta,steps,hosts,findings,review,report_errors=None):
     role_html=(f'<p class="notice">{safe(role_note)}</p>' if meta.get('role_scenarios') or
                any(str(s.get('step','')).startswith('role_') for s in steps) else '')
     doc=doc.replace('</p><h2>Yönetici özeti</h2>',f'</p>{auth_html}{role_html}{platform_html}{discover_html}{snmp_html}{ai_html}{review_table}{inventory_html}<h2>Yönetici özeti</h2>')
-    doc=doc.replace('<h2>Analist bulguları</h2>',risk_html+priority_html+network_html+ad_html+coverage_html+'<h2>Analist bulguları</h2>')
+    doc=doc.replace('<h2>Analist bulguları</h2>',risk_html+priority_html+network_html+ad_html+coverage_html+analyst_html+'<h2>Analist bulguları</h2>')
     doc=doc.replace('<h2>Çalışma günlüğü</h2>',device_html+'<h2>Çalışma günlüğü</h2>')
     doc=doc.replace('</style></head>', '.riskbars{max-width:700px}.riskrow{display:grid;grid-template-columns:70px 1fr 32px;gap:12px;align-items:center;margin:7px 0}.risktrack{height:12px;background:#edf1f6;border-radius:7px}.risktrack i{height:12px;display:block;border-radius:7px}</style></head>')
     doc=doc.replace('Kimlik doğrulamalı iş akışları ve manuel istismar doğrulaması bu çıktıda yer almaz.', 'Otomatik kimlikli erişim kontrolü yalnızca durum kodlarını karşılaştırır. İnsan tarafından yapılan testler yalnızca yukarıdaki manuel test kayıtlarıyla belgelenmişse bu rapora dahildir.')
@@ -868,6 +929,7 @@ def main():
         except (OSError,ValueError) as exc:
             print(f'Cihaz envanteri eski kanıttan çıkarılamadı: {exc}',file=sys.stderr)
     write_coverage(root,meta,steps,review)
+    plan=write_plan(root,meta,steps,review,device_inventory(root),findings)
     errors={}
     for filename,executive in (('YONETICI_OZETI.pdf',True),('TEKNIK_RAPOR.pdf',False)):
         temp=root/('.'+filename+'.pending.pdf')
@@ -880,13 +942,24 @@ def main():
             errors[filename]=f'{type(exc).__name__}: {exc}'
             temp.unlink(missing_ok=True)
             print(f'PDF üretim hatası ({filename}): {errors[filename]}',file=sys.stderr)
+    filename='ANALIST_GOREV_RAPORU.pdf'
+    temp=root/('.'+filename+'.pending.pdf')
+    try:
+        analyst_pdf(root,temp.name,plan,meta)
+        if not temp.is_file() or not temp.stat().st_size:
+            raise ValueError('Analist PDF dosyası oluşturulamadı')
+        temp.replace(root/filename)
+    except Exception as exc:
+        errors[filename]=f'{type(exc).__name__}: {exc}'
+        temp.unlink(missing_ok=True)
+        print(f'PDF üretim hatası ({filename}): {errors[filename]}',file=sys.stderr)
     html_report(root,meta,steps,hosts,findings,review,errors)
     manifest=[]
     for path in root.rglob('*'):
         if path.is_file() and path.name!='SHA256SUMS.txt':
             manifest.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
     (root/'SHA256SUMS.txt').write_text('\n'.join(sorted(manifest))+'\n',encoding='utf-8')
-    print('Raporlar:',*(root/name for name in ('YONETICI_OZETI.pdf','TEKNIK_RAPOR.pdf') if name not in errors),root/'REPORT.html')
+    print('Raporlar:',*(root/name for name in ('YONETICI_OZETI.pdf','TEKNIK_RAPOR.pdf','ANALIST_GOREV_RAPORU.pdf') if name not in errors),root/'REPORT.html')
     if errors:
         raise SystemExit('PDF hataları yukarıda gösterildi; HTML rapor ve sağlam PDF dosyaları oluşturuldu.')
 

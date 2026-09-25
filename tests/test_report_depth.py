@@ -104,6 +104,10 @@ class ReportDepthTests(unittest.TestCase):
             self.assertIn('qa.example.test', html)
             self.assertEqual(inventory['devices'][0]['os_matches'][0]['name'], 'Linux')
             self.assertEqual(next(row for row in coverage['controls'] if row['id'] == 'NET-PORT')['status'], 'çalıştı')
+            analyst = json.loads((root / 'ANALIST_GOREV_RAPORU.json').read_text(encoding='utf-8'))
+            self.assertIn('ANALIST_GOREV_RAPORU.md', html)
+            self.assertTrue(any(task['case'] == 'PROTOCOL' for task in analyst['tasks']))
+            self.assertGreater((root / 'ANALIST_GOREV_RAPORU.pdf').stat().st_size, 5_000)
             self.assertGreater((root / 'TEKNIK_RAPOR.pdf').stat().st_size, 5_000)
             self.assertGreater((root / 'YONETICI_OZETI.pdf').stat().st_size, 5_000)
 
