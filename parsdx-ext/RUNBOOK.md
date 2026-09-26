@@ -44,7 +44,15 @@ printf '10.0.0.0/24\n<DC_IP>\n<DOMAIN>\n' > scope.txt
 ```
 Sadece bu dosyadaki hedeflere dokunulur; DEVICE_INVENTORY'de olsa bile kapsam dışı host atlanır.
 
-**c) ÖNCE planı gör (hiçbir şey çalıştırmaz):**
+**c) HAZIRLIK KONTROLÜ — canlıdan önce GO/NO-GO (yarım yolda eksik çıkmasın):**
+```bash
+python3 parsdx-ext/doctor.py --scope scope.txt --run-dir "<RUN>" \
+  --dc <DC_FQDN> --domain <DOMAIN> --ip <DC_IP> --user <TEST_KULLANICI> --password '<PAROLA>'
+```
+→ Araçlar kurulu mu, scope geçerli mi, kimlik var mı, DC'ye ağ yolu var mı hepsini kontrol eder.
+**NO-GO derse [FAIL] satırlarını düzelt, GO görmeden ilerleme.** (Kimlik doğrulaması yapmaz, sadece kontrol.)
+
+**d) Planı gör (hiçbir şey çalıştırmaz):**
 ```bash
 python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
   --dc <DC_FQDN> --domain <DOMAIN> --ip <DC_IP> \
@@ -52,7 +60,7 @@ python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
 ```
 → Çıktıyı Claude'a yapıştır. Kaç host "in / dropped" göründüğüne bak; plan mantıklıysa devam.
 
-**d) Lockout güvenliğini teyit et (kimseyi kilitlemeyelim):**
+**e) Lockout güvenliğini teyit et (kimseyi kilitlemeyelim):**
 ```bash
 parsdx-ext/.venv/bin/python3 parsdx-ext/guard.py --policy --dc <DC_FQDN> --domain <DOMAIN> \
   --ip <DC_IP> --user <TEST_KULLANICI> --password '<PAROLA>'
@@ -60,7 +68,7 @@ parsdx-ext/.venv/bin/python3 parsdx-ext/guard.py --policy --dc <DC_FQDN> --domai
 → "SAFE BUDGET" satırını Claude'a göster. (Pipeline zaten canlıda kimlik ön-doğrulaması yapıyor;
 yanlış/eski şifre olursa **fan-out'tan ÖNCE** durur, hesabı kilitlemez.)
 
-**e) Canlı çalıştır (read-only-first zincir; yazma/dump KAPALI):**
+**f) Canlı çalıştır (read-only-first zincir; yazma/dump KAPALI):**
 ```bash
 python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
   --dc <DC_FQDN> --domain <DOMAIN> --ip <DC_IP> \
@@ -69,7 +77,7 @@ python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
 → `<RUN>/parsdx/SUMMARY.md` çıkar: bulgular + kill-chain + zincir severity. Claude'a yapıştır.
 Bir şey ters giderse: `touch "<RUN>/STOP"` → çalışan zincir bir sonraki adımdan önce durur (kill-switch).
 
-**f) (Yalnız gerekliyse, Claude onaylarsa) yazma/dump adımları:**
+**g) (Yalnız gerekliyse, Claude onaylarsa) yazma/dump adımları:**
 ```bash
 python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt ... \
   --enable-writes --allow-dcsync

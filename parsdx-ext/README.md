@@ -9,6 +9,7 @@ shallow competitor report lacks.
 
 | File | Role |
 |---|---|
+| `doctor.py` | Pre-engagement readiness check (GO/NO-GO): tools installed, scope valid, credential present, DC reachable (TCP only, no auth). Run this FIRST. |
 | `guard.py` | Lockout-aware auth guard — reads domain policy, budgets attempts, hard-stops on lockout. Wraps all guessing. |
 | `attack.py` | Offensive orchestrator — reads UBDEN JSON, runs a READ-ONLY-FIRST chain (ADCS→BloodHound→AS-REP→kerberoast→auth-matrix→coerce-scan), evidence into `<run>/parsdx`. Writes/dumps gated behind `--enable-writes`+confirm. |
 | `parse.py` | Tool output → normalized findings (certipy/kerberoast/asrep/nxc/coercer). |
@@ -27,6 +28,8 @@ shallow competitor report lacks.
 ```bash
 sudo bash parsdx-ext/setup-offensive.sh                    # once
 printf '10.0.0.0/24\n<DC_IP>\n<DOMAIN>\n' > scope.txt      # REQUIRED allowlist (fail-closed)
+python3 parsdx-ext/doctor.py --scope scope.txt --run-dir <UBDEN_run> \
+        --dc dc01.corp.local --domain corp.local --ip <DC_IP> --user <test_acct> --password '***'  # GO/NO-GO first
 python3 parsdx-ext/pipeline.py --run-dir <UBDEN_run> --scope scope.txt \
         --dc dc01.corp.local --domain corp.local \
         --user <test_acct> --password '***' --ip <DC_IP> --dry-run   # preview the plan
@@ -43,6 +46,6 @@ is denylisted and absent.
 
 ## Test everything
 ```bash
-for m in guard attack score parse attck narrate coverage emit pipeline; do
+for m in doctor guard attack score parse attck narrate coverage emit pipeline; do
   python3 parsdx-ext/$m.py --self-test | tail -1; done
 ```
