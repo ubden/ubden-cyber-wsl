@@ -13,6 +13,7 @@ import sys
 _STAGE_TR = {
     "asrep_roast":  "Kimlik elde etme",
     "kerberoast":   "Kimlik elde etme",
+    "cracked_credential": "Kimlik ele geçirme",
     "unauth_smb":   "Bilgi/kimlik toplama",
     "default_creds": "İlk erişim",
     "local_admin":  "Yanal hareket",
@@ -27,6 +28,8 @@ _DESC_TR = {
                     "kimlik bilgisi olmadan parolasının çevrimdışı kırılabileceği bir AS-REP elde edildi.",
     "kerberoast":   "'{asset}' servis hesabı için bir TGS istendi; bileti hesabın parola özetiyle "
                     "şifreli olduğundan parola çevrimdışı kırılabilir (kilitlenme riski olmadan).",
+    "cracked_credential": "'{asset}' hesabının parolası çevrimdışı KIRILDI (ağa dokunmadan, kilitleme "
+                    "riski olmadan). Artık bu hesabın açık parolası biliniyor.",
     "unauth_smb":   "'{asset}' üzerinde yetkisiz erişilebilen paylaşımda hassas veri/kimlik bulundu.",
     "default_creds": "'{asset}' üzerinde öntanımlı/zayıf kimlik bilgisi ile erişim sağlandı.",
     "local_admin":  "Elde edilen kimlik bilgisi '{asset}' üzerinde yerel yönetici yetkisi verdi; bu, "

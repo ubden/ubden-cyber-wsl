@@ -17,8 +17,10 @@ shallow competitor report lacks.
 | `attck.py` | MITRE ATT&CK tagging + Navigator layer JSON. |
 | `narrate.py` | Kill-chain narrative (Turkish, client-facing). |
 | `coverage.py` | Coverage matrix (tested/attempted/skipped) from executed steps. |
+| `crack.py` | Offline kerberoast/AS-REP cracking helper — writes ready `.hash` files + exact hashcat/john commands; ingests results back as CRACKED-credential findings. No network, no lockout. |
+| `remediation.py` | Prioritized remediation roadmap (Turkish) grouped by root cause + quick-wins. |
 | `emit.py` | Writes findings into UBDEN `review.json` (verified when evidence hash-matches) + re-runs report_v2. |
-| `pipeline.py` | A-to-Z: attack → parse → score → attck → chain → narrate → coverage → emit. |
+| `pipeline.py` | A-to-Z: attack → parse (+cracked.json) → score → attck → chain → narrate → coverage → remediation → emit. |
 | `setup-offensive.sh` | Installs the offensive toolchain on Kali (run once, on the box). |
 | `ARCHITECTURE.md` | The full design + what each idea was borrowed from. |
 | `RUNBOOK.md` | Step-by-step operator guide for engagement day. |
@@ -46,6 +48,6 @@ is denylisted and absent.
 
 ## Test everything
 ```bash
-for m in doctor guard attack score parse attck narrate coverage emit pipeline; do
+for m in doctor guard attack score parse attck narrate coverage emit pipeline remediation crack; do
   python3 parsdx-ext/$m.py --self-test | tail -1; done
 ```

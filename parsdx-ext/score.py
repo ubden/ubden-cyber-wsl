@@ -81,6 +81,7 @@ def base_score(vector: str) -> tuple[float, str]:
 TYPE_VECTORS = {
     "adcs_esc":        "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",  # ESC1/ESC8 -> DA
     "dcsync":          "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H",
+    "cracked_credential": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",  # password recovered -> account takeover, 8.8
     "local_admin":     "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",  # cred (needs auth) opens host (Pwn3d!) -> 8.8
     "kerberoast":      "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:N/A:N",  # crackable SPN -> credential exposure (aligned w/ asrep)
     "asrep_roast":     "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",  # offline crack -> credential exposure
