@@ -1,0 +1,6 @@
+# PARSDX post-UBDEN extension — python libraries our own code imports.
+# The heavy offensive tools (netexec, certipy, impacket, coercer, bloodyAD, bloodhound-ce)
+# are installed as separate apps by setup-offensive.sh and invoked as subprocesses.
+ldap3>=2.9            # guard.py live lockout-policy read + ad LDAPS
+cvss>=3.4             # score.py cross-check against RedHat's CVSS engine
+mitreattack-python    # attck.py optional enrichment (layer generation works without it)
