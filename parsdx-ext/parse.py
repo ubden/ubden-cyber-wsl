@@ -68,7 +68,9 @@ def parse_kerberoast(text: str) -> list[dict]:
 def parse_asrep(text: str) -> list[dict]:
     """GetNPUsers -> one finding per AS-REP-roastable account."""
     findings = []
-    for m in re.finditer(r"\$krb5asrep\$\d+\$([^@]+)@([^:\s]+)", text):
+    # RC4 (etype 23): `$krb5asrep$23$user@REALM:hash`  ·  AES (17/18): `$krb5asrep$18$user$REALM$...`
+    # Separator between user and realm is '@' for RC4 but '$' for AES — accept both, or AES is lost.
+    for m in re.finditer(r"\$krb5asrep\$\d+\$([^@$\s]+)[@$]([^:@$\s]+)", text):
         user, realm = m.group(1), m.group(2)
         findings.append({
             "type": "asrep_roast",
@@ -114,17 +116,23 @@ def parse_coercer(text: str) -> list[dict]:
     findings = []
     seen = set()
     for line in text.splitlines():
-        # Coercer's real "this host is coercible" signals: ERROR_BAD_NETPATH (the coerced host tried to
-        # reach our path) and "Attack has worked!"; also keep 'vulnerable' for scan-mode summaries.
-        if not re.search(r"ERROR_BAD_NETPATH|Attack has worked|vulnerable|\(coerce\b", line, re.I):
+        # Skip negatives FIRST: Coercer prints "[-] host is NOT vulnerable to X" — matching bare
+        # 'vulnerable' there would fabricate a Critical finding. Then require an affirmative signal.
+        if re.search(r"not\s+vulnerable", line, re.I):
             continue
-        meth = re.search(r"\b(EfsRpc\w+|MS-\w+|DFSCoerce|PetitPotam|PrinterBug|\w+Coerce)\b", line)
-        if meth and meth.group(1) not in seen:
-            seen.add(meth.group(1))
+        if not re.search(r"ERROR_BAD_NETPATH|Attack has worked|\bvulnerable\b", line, re.I):
+            continue
+        meth = re.search(r"\b(EfsRpc\w+|MS-[A-Za-z]+|DFSCoerce|PetitPotam|PrinterBug|\w+Coerce)\b", line)
+        host = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", line)
+        host_ip = host.group(1) if host else None
+        key = (host_ip or "?", meth.group(1) if meth else "coercion")
+        if meth and key not in seen:  # dedupe per (host, method)
+            seen.add(key)
             findings.append({
                 "type": "coercion",
-                "title": f"Authentication coercion exposed: {meth.group(1)}",
-                "asset": "domain hosts",
+                "title": f"Authentication coercion exposed: {meth.group(1)}"
+                         + (f" on {host_ip}" if host_ip else ""),
+                "asset": host_ip or "domain hosts",
                 "technique": "T1187",  # Forced Authentication
                 "root_cause": f"RPC method {meth.group(1)} allows forcing machine authentication.",
                 "description": f"Coercer's read-only scan found {meth.group(1)} reachable; a host can be "
@@ -214,16 +222,23 @@ def _self_test() -> int:
 
     asrep = "$krb5asrep$23$jdoe@CORP.LOCAL:aabbcc..."
     af = parse_asrep(asrep)
-    check("asrep: account parsed", len(af) == 1 and af[0]["asset"] == "CORP.LOCAL\\jdoe")
+    check("asrep RC4 parsed", len(af) == 1 and af[0]["asset"] == "CORP.LOCAL\\jdoe")
+    af_aes = parse_asrep("$krb5asrep$18$muser$CORP.LOCAL$00aabbccdd...")
+    check("asrep AES (etype 18) parsed", len(af_aes) == 1 and af_aes[0]["asset"] == "CORP.LOCAL\\muser")
 
     nxc = ("SMB  10.0.0.20  445  FILE01  [+] corp.local\\svc_test:S3cret! (Pwn3d!)\n"
            "SMB  10.0.0.21  445  WEB01   [-] corp.local\\svc_test:S3cret! STATUS_LOGON_FAILURE")
     nf = parse_nxc_authmatrix(nxc)
     check("nxc: only Pwn3d! host becomes a finding", len(nf) == 1 and nf[0]["asset"] == "10.0.0.20")
 
-    co = "[-] DC01 EfsRpcOpenFileRaw (\\\\attacker\\x) : ERROR_BAD_NETPATH"
+    co = "[-] 10.0.0.10 EfsRpcOpenFileRaw (\\\\attacker\\x) : ERROR_BAD_NETPATH"
     cof = parse_coercer(co)
     check("coercer real signal (ERROR_BAD_NETPATH) parsed", len(cof) >= 1 and cof[0]["type"] == "coercion")
+    check("coercer skips 'NOT vulnerable' (no false positive)",
+          len(parse_coercer("[-] 10.0.0.5 is NOT vulnerable to PetitPotam (MS-EFSR)")) == 0)
+    check("coercer dedupes per (host, method)",
+          len(parse_coercer("10.0.0.10 EfsRpcOpenFileRaw ERROR_BAD_NETPATH\n"
+                            "10.0.0.10 EfsRpcOpenFileRaw ERROR_BAD_NETPATH")) == 1)
 
     # aggregate over a temp run folder — MUST read PER-HOST auth_matrix_<host>.txt (regression guard)
     import tempfile
@@ -240,7 +255,7 @@ def _self_test() -> int:
         check("parse_run tags each finding with its real evidence file",
               all("evidence" in f and f["evidence"].startswith("parsdx/") for f in allf))
 
-    total = 10
+    total = 13
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 

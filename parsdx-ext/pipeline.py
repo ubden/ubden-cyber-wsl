@@ -141,7 +141,8 @@ def _self_test() -> int:
         json.dump([{"step": "nmap_10.0.0.10", "status": "ok"}], open(os.path.join(d, "steps.json"), "w"))
         pdir = os.path.join(d, "parsdx"); os.makedirs(pdir)
         open(os.path.join(pdir, "kerberoast.txt"), "w").write("$krb5tgs$23$*svc_sql$CORP.LOCAL$MSSQLSvc*$h")
-        open(os.path.join(pdir, "auth_matrix.txt"), "w").write("SMB 10.0.0.20 445 FILE01 [+] corp.local\\svc:P (Pwn3d!)")
+        # per-host filename (matches real attack.py output; guards the parse regression)
+        open(os.path.join(pdir, "auth_matrix_10.0.0.20.txt"), "w").write("SMB 10.0.0.20 445 FILE01 [+] corp.local\\svc:P (Pwn3d!)")
         open(os.path.join(pdir, "adcs_find.txt"), "w").write("    Template Name : UserAuth\n      ESC1 : enrollee supplies subject")
 
         s = run(d, {"user": "svc", "password": "P"}, skip_attack=True, no_report=True)

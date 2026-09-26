@@ -58,7 +58,7 @@ def build_layer(findings: list[dict], name: str = "PARSDX Engagement",
         })
     return {
         "name": name,
-        "versions": {"attack": "14", "navigator": "4.9.1", "layer": "4.5"},
+        "versions": {"attack": "19", "navigator": "5.1.0", "layer": "4.5"},
         "domain": "enterprise-attack",
         "description": description,
         "techniques": techniques,

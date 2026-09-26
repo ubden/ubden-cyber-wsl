@@ -50,9 +50,21 @@ def _load_steps(run_dir: str) -> list[dict]:
 
 
 def build_matrix(run_dir: str) -> dict:
+    import glob
     steps = _load_steps(run_dir)
     executed = [(str(s.get("step", "")).lower(), str(s.get("status", "")).lower())
                 for s in steps if isinstance(s, dict)]
+    # Corroborate against evidence files too: in --skip-attack mode parsdx_steps.json is not written,
+    # so a check would read "skipped" right next to its own verified finding. Treat each evidence file
+    # basename (kerberoast.txt, adcs_find.txt, auth_matrix_<host>.txt, coerce_scan.txt, ...) as a
+    # completed signal so the matrix reflects what actually ran.
+    for f in glob.glob(os.path.join(run_dir, "parsdx", "*.txt")):
+        base = os.path.splitext(os.path.basename(f))[0].lower()
+        try:
+            nonempty = os.path.getsize(f) > 0
+        except OSError:
+            nonempty = False
+        executed.append((base, "ok" if nonempty else "attempted"))
     rows = []
     for cid, cat, title, prefixes in CHECKS:
         hits = [(name, st) for name, st in executed if any(name.startswith(p.lower()) for p in prefixes)]
@@ -125,7 +137,16 @@ def _self_test() -> int:
         jp, mp = write_matrix(d)
         check("writes json+md", os.path.exists(jp) and os.path.exists(mp))
 
-    total = 8
+    # --skip-attack corroboration: only evidence files, NO parsdx_steps.json -> checks still tested
+    with tempfile.TemporaryDirectory() as d2:
+        os.makedirs(os.path.join(d2, "parsdx"))
+        open(os.path.join(d2, "parsdx", "kerberoast.txt"), "w").write("$krb5tgs$...")
+        open(os.path.join(d2, "parsdx", "auth_matrix_10.0.0.10.txt"), "w").write("[+] (Pwn3d!)")
+        m2 = {r["id"]: r for r in build_matrix(d2)["checks"]}
+        check("kerberoast tested from evidence file alone (skip-attack)", m2["AD-03"]["status"] == "tested")
+        check("auth-matrix tested from per-host evidence alone", m2["AD-08"]["status"] == "tested")
+
+    total = 10
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
