@@ -117,12 +117,27 @@ def emit_findings(run_dir: str, findings: list[dict]) -> dict:
 
 
 def regenerate_report(run_dir: str) -> int:
-    """Re-run UBDEN's report_v2.py to fold our findings into the PDFs/HTML."""
-    report = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "report_v2.py")
-    if not os.path.exists(report):
-        print(f"[emit] report_v2.py not found at {report}; skipping regen")
+    """Re-run UBDEN's report_v2.py to fold our findings into the PDFs/HTML.
+
+    report_v2.py needs reportlab, which install.sh puts in /opt/ubden-cyber/.venv — NOT in system
+    python. So prefer the installed copy+venv; fall back to a report_v2.py sitting next to parsdx-ext."""
+    installed_report = "/opt/ubden-cyber/report_v2.py"
+    installed_py = "/opt/ubden-cyber/.venv/bin/python"
+    parent_report = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "report_v2.py")
+    tries = []
+    if os.path.exists(installed_report):
+        tries.append((installed_py if os.path.exists(installed_py) else sys.executable, installed_report))
+    if os.path.exists(parent_report):
+        tries.append((sys.executable, parent_report))
+    if not tries:
+        print("[emit] report_v2.py not found (checked /opt/ubden-cyber and parsdx-ext parent); "
+              "findings ARE in review.json — run report_v2.py manually to render.")
         return 1
-    return subprocess.run([sys.executable, report, run_dir]).returncode
+    py, rep = tries[0]
+    rc = subprocess.run([py, rep, run_dir]).returncode
+    if rc != 0:
+        print(f"[emit] report_v2.py exited {rc}; findings are still in review.json (re-run manually).")
+    return rc
 
 
 def _self_test() -> int:

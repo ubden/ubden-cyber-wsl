@@ -87,8 +87,11 @@ TYPE_VECTORS = {
     "unauth_smb":      "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",  # sensitive share read
     "weak_pw_policy":  "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
     "default_creds":   "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-    "coercion":        "CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",  # PetitPotam -> relay -> DA
-    "gpp_password":    "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",
+    # Honest per-finding scores: a read-only coercion SCAN or a single credential recovery does NOT
+    # by itself prove full-domain impact — that comes via the CHAIN. Score the demonstrated finding
+    # conservatively (credential/relay exposure); chain_severity escalates when it actually reaches DA.
+    "coercion":        "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",  # coercible host (relay is a separate step)
+    "gpp_password":    "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",  # recovered credential from SYSVOL
 }
 
 
@@ -131,15 +134,15 @@ def chain_severity(chain: list[dict], reached_da: bool) -> dict:
     link_scores = [f.get("cvss_score", 0.0) for f in chain]
     max_link = max(link_scores) if link_scores else 0.0
     if reached_da:
-        score = max(9.0, max_link)  # full domain compromise
-        rationale = ("Individual links may rate lower, but chained they yield full Active "
-                     "Directory (Domain Admin) compromise — scored as the realised end state.")
-    elif len(chain) >= 3:
-        score = min(10.0, max_link + 1.0)
-        rationale = "Multiple chained weaknesses compound; rated one band above the strongest link."
+        score = max(9.0, max_link)  # full domain compromise WAS demonstrated (executed DCSync)
+        rationale = ("Individual links may rate lower, but chained they yielded full Active "
+                     "Directory (Domain Admin) compromise — scored as the realised, executed end state.")
     else:
+        # No fake numeric bump (a "+1 for 3 links" has no CVSS basis). The chain score is the
+        # strongest demonstrated link; the compounding risk is described in the narrative, not invented.
         score = max_link
-        rationale = "Rated as the strongest individual link."
+        rationale = "Rated as the strongest individually-demonstrated link" + (
+            f"; {len(chain)} findings chain together (see the attack narrative)." if len(chain) >= 2 else ".")
     return {"chain_score": round(score, 1), "chain_severity": severity_band(score),
             "reached_da": reached_da, "links": len(chain), "rationale": rationale}
 
@@ -192,7 +195,7 @@ def _self_test() -> int:
     cs = chain_severity(chain, reached_da=True)
     check("chain to DA is Critical", cs["chain_severity"] == "Critical" and cs["chain_score"] >= 9.0)
     cs2 = chain_severity(chain, reached_da=False)
-    check("3-link chain bumps one band", cs2["chain_score"] == 7.5 and cs2["chain_severity"] == "High")
+    check("non-DA chain = strongest link (no invented bump)", cs2["chain_score"] == 6.5 and cs2["chain_severity"] == "Medium")
 
     total = 16
     print(f"\n{ok}/{total} checks passed")

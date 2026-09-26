@@ -28,7 +28,10 @@ irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v4.8.3-wsl.1/bootst
 ## 3. Bizim offensive katman (Kali WSL içinde — "daha iyisini yaptığımız yer")
 Kali'yi aç: `wsl -d kali-linux`. parsdx-ext'i makineye getir (repo zaten kurulu; parsdx-ext dizinini kopyala veya git ile çek), sonra:
 
-**a) Araçları kur (bir kez):**
+**a) parsdx-ext'i makineye getir + araçları kur (bir kez):**
+`parsdx-ext/` klasörünü Kali'ye taşı (git ile fork'tan çek veya kopyala). Rapor yeniden üretimi
+UBDEN'in `/opt/ubden-cyber/`'daki kurulumunu (report_v2 + reportlab'lı venv) otomatik bulur, o yüzden
+parsdx-ext nerede dursa çalışır; ama kolaylık için UBDEN klasörünün içine koy.
 ```bash
 sudo bash parsdx-ext/setup-offensive.sh
 source ~/.bashrc     # pipx PATH icin
@@ -51,7 +54,7 @@ python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
 
 **d) Lockout güvenliğini teyit et (kimseyi kilitlemeyelim):**
 ```bash
-python3 parsdx-ext/guard.py --policy --dc <DC_FQDN> --domain <DOMAIN> \
+parsdx-ext/.venv/bin/python3 parsdx-ext/guard.py --policy --dc <DC_FQDN> --domain <DOMAIN> \
   --ip <DC_IP> --user <TEST_KULLANICI> --password '<PAROLA>'
 ```
 → "SAFE BUDGET" satırını Claude'a göster. (Pipeline zaten canlıda kimlik ön-doğrulaması yapıyor;
@@ -74,15 +77,22 @@ python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt ... \
 → `YETKILIYIM` yazman istenir (pipeline'da da). DCSync = **sadece kanıt** (`-just-dc-ntlm`), veri
 sızdırma YOK (sözleşme Madde 5, 8). `--allow-dcsync` ayrı bayrak — en ağır adım kendi izniyle açılır.
 
+⚠️ **`--assume-yes` KULLANMA** (birlikte `--enable-writes --allow-dcsync --assume-yes` = **insan onayı
+olmadan tüm domain hash'lerini dökme**). O bayrak yalnızca gerçekten insansız otomasyon içindir; canlı
+işte elle `YETKILIYIM` yaz.
+
 ## 4. Rapor
 - [ ] `<RUN>/parsdx/` altındaki KILL_CHAIN.md, COVERAGE_MATRIX.md, ATTACK_LAYER.json + UBDEN'in `review.json`'a işlenmiş doğrulanmış bulgular hazır.
 - [ ] UBDEN raporunu yeniden ürettir (pipeline zaten yapar) veya `python3 report_v2.py "<RUN>"`.
 - [ ] Çıktıyı **AnyDesk dosya transferiyle senin laptobuna** çek → cilalı raporu Claude ile burada bitir → client'ın verdiği güvenli konuma teslim.
 
 ## 5. Temizlik (profesyonellik — sözleşme Madde 7, 8, 19)
-- [ ] Kali'de bıraktığımız geçici dosyaları/araçları kaldır.
-- [ ] UBDEN'in açtığı `ubden` sudo kullanıcısının **şifresi `password`** → değiştir veya makineden kaldır.
-- [ ] Loot/kimlik bilgileri makinede kalmasın; kanıtlar sadece rapora giren asgari kadar.
+- [ ] **Zayıf `ubden` kullanıcısı** (şifre `password`) → düzelt: `sudo passwd ubden` (yeni güçlü şifre).
+- [ ] **DCSync hash'lerini laptobuna ÇEKME.** `dcsync_dump.txt` krbtgt dahil tüm hash'leri içerir; rapora
+      sadece asgari kanıt girer, ham dosya AnyDesk ile çekilmez.
+- [ ] Kanıt zaten `0600` + `parsdx/` `0700`; iş bitince loot'u sil:
+      `shred -u "<RUN>/parsdx/dcsync_dump.txt" 2>/dev/null; rm -f "<RUN>/parsdx/"*.txt`
+- [ ] Cracked/elde edilen kimlik bilgileri = toksik; ağ dışında tut, iş bitince imha et.
 - [ ] Client isterse `destroy` ile WSL'i tamamen kaldır (⚠️ TÜM WSL'i siler — önce raporu dışarı al).
 
 ---
@@ -90,7 +100,7 @@ sızdırma YOK (sözleşme Madde 5, 8). `--allow-dcsync` ayrı bayrak — en ağ
 ## Elle yedek komutlar (pipeline takılırsa, Claude yönlendirir)
 ```bash
 # Lockout politikasi (HER auth'tan once):
-python3 parsdx-ext/guard.py --policy --dc <DC> --domain <DOM> --ip <IP> --user <U> --password '<P>'
+parsdx-ext/.venv/bin/python3 parsdx-ext/guard.py --policy --dc <DC> --domain <DOM> --ip <IP> --user <U> --password '<P>'
 # ADCS (en sessiz DA yolu):
 certipy find -u <U>@<DOM> -p '<P>' -dc-ip <IP> -vulnerable -stdout
 # BloodHound (sessiz):

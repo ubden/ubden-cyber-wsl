@@ -299,7 +299,19 @@ def main(argv=None) -> int:
     if args.policy:
         if not all((args.dc, args.domain, args.user, args.password)):
             ap.error("--policy requires --dc --domain --user --password")
-        pol = read_lockout_policy_ldap(args.dc, args.domain, args.user, args.password, args.ip)
+        try:
+            pol = read_lockout_policy_ldap(args.dc, args.domain, args.user, args.password, args.ip)
+        except LockoutRisk as e:
+            print(f"[guard] LDAPS policy read unavailable: {e}")
+            print("[guard] This standalone display is OPTIONAL — the pipeline pre-flight validates the "
+                  "credential via an nxc bind instead. (Run with parsdx-ext/.venv/bin/python, which has "
+                  "ldap3, to see the policy here.)")
+            return 0
+        except Exception as e:  # noqa: BLE001 - self-signed cert / unreachable DC etc.
+            print(f"[guard] LDAPS policy read failed ({type(e).__name__}) — likely a self-signed AD "
+                  "certificate or an unreachable DC. This display is OPTIONAL; the pipeline pre-flight "
+                  "handles it via the nxc fallback. Proceeding is safe.")
+            return 0
         g = AuthGuard(pol, safety_margin=args.margin, hard_cap=args.cap)
         print(f"policy source : {pol.source}")
         print(f"threshold     : {pol.threshold} ({'locks out' if pol.locks_out else 'NEVER locks out'})")

@@ -28,10 +28,15 @@ Hard-excluded from the tool. Not a flag, not a mode — absent by design:
 - **Data deletion, persistence/backdoors, deliberate shutdown, physical** — forbidden (Madde 5).
 
 ## What is GATED (off unless explicitly unlocked + `YETKILIYIM` typed)
-`--enable-writes` only:
-- **DCSync / secretsdump** — read-heavy but pulls secrets → proof only, never exfiltrate (Madde 8).
-- **bloodyAD directory writes** — state change; each write logged WITH its inverse (revert log).
-- **Coercion firing** (vs the read-only scan we do by default).
+**Implemented today** — only one write action exists in `build_plan`:
+- **DCSync / secretsdump** — needs `--enable-writes` AND `--allow-dcsync` AND `YETKILIYIM` (or
+  `--assume-yes` for headless). Read-heavy, pulls secrets → proof only, never exfiltrate (Madde 8).
+  ⚠️ `--enable-writes --allow-dcsync --assume-yes` together = unattended full-domain dump — do not use
+  that combo on a live engagement; confirm by hand.
+
+**PLANNED — NOT implemented yet** (do not assume these run): bloodyAD directory writes with a revert
+log, and coercion *firing* (only the read-only `coercer scan` runs today). When added they will sit
+behind the same choke point.
 
 ## The two REAL risks and how we control them
 1. **Account lockout** (the #1 realistic harm in AD testing). The default chain uses ONE known-good

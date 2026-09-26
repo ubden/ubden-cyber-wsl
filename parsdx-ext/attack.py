@@ -36,7 +36,7 @@ from guard import (AuthGuard, LockoutPolicy, LockoutRisk, is_lockout_signal,  # 
 TOOLS = {
     "nxc": ["nxc", "netexec"],
     "certipy": ["certipy", "certipy-ad"],
-    "bloodhound-python": ["bloodhound-python", "bloodhound-ce-python"],
+    "bloodhound-python": ["bloodhound-ce-python", "bloodhound-python"],  # CE first: legacy emits v4 JSON CE can't ingest
     "GetUserSPNs": ["impacket-GetUserSPNs", "GetUserSPNs.py"],
     "GetNPUsers": ["impacket-GetNPUsers", "GetNPUsers.py"],
     "coercer": ["coercer", "Coercer"],
@@ -223,7 +223,7 @@ def build_plan(ctx, hosts, user, password, hashes, enable_writes, allow_dcsync) 
     plan.append(Step("coerce_scan", "coercer",
                      ["coercer", "scan", "-u", user, *(["--hashes", hashes] if hashes else ["-p", password]),
                       "-d", dom, "-t", dc_target],
-                     target=dc_target, note="coercion exposure probe (verb 'scan' only; does not fire)"))
+                     auth=True, target=dc_target, note="coercion exposure probe (verb 'scan' only; does not fire)"))
 
     if enable_writes and allow_dcsync:
         plan.append(Step("dcsync_dump", "secretsdump",
@@ -306,7 +306,29 @@ def _tail(path, n=65536):
         return ""
 
 
-def run_plan(plan, out_dir, dry_run, ctx, nets, hosts) -> list[dict]:
+def _scrub_secrets(path, secrets):
+    """Replace known secret values (password/hashes) in a captured evidence file with '***'.
+    Tools like nxc echo the cleartext 'DOMAIN\\user:password' into their output; strip it so the
+    on-disk evidence never holds the credential. (DCSync hash loot is the finding itself and cannot
+    be scrubbed — it relies on 0600 + gating + no-exfil.) Runs before the SHA-256 so the hash matches."""
+    reals = [s for s in (secrets or []) if s and len(s) >= 3]
+    if not reals:
+        return
+    try:
+        data = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return
+    new = data
+    for s in reals:
+        new = new.replace(s, "***")
+    if new != data:
+        try:
+            open(path, "w", encoding="utf-8").write(new)
+        except OSError:
+            pass
+
+
+def run_plan(plan, out_dir, dry_run, ctx, nets, hosts, secrets=None) -> list[dict]:
     import json
     os.umask(0o077)
     os.makedirs(out_dir, exist_ok=True)
@@ -359,6 +381,7 @@ def run_plan(plan, out_dir, dry_run, ctx, nets, hosts) -> list[dict]:
         rec["seconds"] = round(time.time() - t0, 1)
         rec["finished_at"] = _now_iso()
         if os.path.exists(out_file):
+            _scrub_secrets(out_file, secrets)  # strip cleartext creds before hashing/storing
             try:
                 os.chmod(out_file, 0o600)
             except OSError:
@@ -411,6 +434,9 @@ def run_offensive(ctx, *, user, password=None, hashes=None, nets=None, hosts_all
 
     confirm_writes(enable_writes, dry_run, assume_yes)
 
+    if not dry_run and skip_preflight:
+        print("!! WARNING: skip_preflight=True disables the load-bearing lockout pre-flight. "
+              "A wrong/expired credential can now fan out and lock the account.", file=sys.stderr)
     if not dry_run and not skip_preflight:
         policy, ok = preflight_and_policy(ctx, user, password, hashes)
         if not ok:
@@ -422,7 +448,7 @@ def run_offensive(ctx, *, user, password=None, hashes=None, nets=None, hosts_all
     plan = build_plan(ctx, in_hosts, user, password, hashes, enable_writes, allow_dcsync)
     out_dir = out_dir or os.path.join(ctx.run_dir, "parsdx")
     print(f"# scope: {len(in_hosts)} in / {len(dropped)} dropped out-of-scope; DC={dc_target}")
-    events = run_plan(plan, out_dir, dry_run, ctx, nets, hosts_allow)
+    events = run_plan(plan, out_dir, dry_run, ctx, nets, hosts_allow, secrets=[password, hashes])
     return {"events": events, "in_scope_hosts": in_hosts, "dropped_hosts": dropped}
 
 
@@ -522,11 +548,17 @@ def _self_test() -> int:
         check("confirm_writes allows with assume_yes", confirm_writes(True, False, True) is None)
 
         # dry-run: builds plan, filters scope, no live calls, all redacted
-        res = run_offensive(ctx, user="u", password="P",
+        res = run_offensive(ctx, user="u", password="S3cretPw!",
                             nets=[ipaddress.ip_network("10.0.0.0/24")], dry_run=True)
         check("dry-run keeps only in-scope hosts", set(res["in_scope_hosts"]) == {"10.0.0.10", "10.0.0.20"})
         cmds = " ".join(" ".join(e["command"]) for e in res["events"])
-        check("dry-run leaks no password", "P" not in cmds.replace("<PAROLA>", "") or "***" in cmds)
+        check("dry-run leaks no password (real check)", "S3cretPw!" not in cmds and "***" in cmds)
+
+        # secret-scrub removes a cleartext credential echoed into an evidence file
+        ev = os.path.join(d, "ev.txt")
+        open(ev, "w").write("SMB 10.0.0.20 [+] corp.local\\svc:S3cretPw! (Pwn3d!)")
+        _scrub_secrets(ev, ["S3cretPw!", None])
+        check("secret-scrub strips cleartext cred from evidence", "S3cretPw!" not in open(ev).read())
 
         # STOP kill-switch aborts
         open(os.path.join(d, "STOP"), "w").write("halt")
@@ -534,7 +566,7 @@ def _self_test() -> int:
                              nets=[ipaddress.ip_network("10.0.0.0/24")], skip_preflight=True)
         check("STOP file aborts the run", any(e["status"] == "aborted_stop_file" for e in res2["events"]))
 
-    total = 29
+    total = 30
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 

@@ -45,6 +45,11 @@ No plugin system exists. We attach at the `report_v2.py <run_dir>` boundary:
 - Behind explicit flag + operator confirm, NEVER unattended: directory writes (bloodyAD), coercion firing, credential dumping (secretsdump/DonPAPI), Responder active / mitm6.
 - Every write logs its inverse (revert log) = the non-destructive audit trail.
 
+> **Implementation status:** the default read-only chain + a gated **DCSync-proof** step are what
+> `build_plan` actually ships today. `bloodyAD` writes, coercion *firing*, and the per-write revert log
+> are **planned, not yet implemented** — today only `coercer scan` (read-only) runs. Treat the rows
+> above describing writes as the design target, not current behaviour.
+
 ## Build order (MVP first — small, testable, no live target needed until `exec`)
 1. **`guard`** — the lockout math + LDAP policy read. Foundational, safe, unit-testable offline. Build first.
 2. **`score`** — wrap RedHat cvss + a first chain-severity rule. Pure logic, testable now, immediate report win (MILSAFE had no CVSS).
