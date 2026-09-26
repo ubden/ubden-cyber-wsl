@@ -14,8 +14,12 @@ DC's LDAP/SMB ports to confirm a path exists (no login).
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
+import re
+import shutil
 import socket
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -113,6 +117,58 @@ def check_reachability(target) -> list[tuple]:
     return res
 
 
+def check_dns(domain, dc, ip) -> tuple:
+    """Names must resolve or Kerberos/LDAP-by-name silently fails. (linWinPwn --auto-config adds the
+    DC to /etc/hosts for exactly this reason.)"""
+    for label, val in (("domain", domain), ("DC", dc)):
+        if not val or val == ip:
+            continue
+        try:
+            socket.getaddrinfo(val, None)
+        except OSError:
+            return ("DNS resolution", WARN, f"{label} '{val}' does not resolve — add the DC to /etc/hosts "
+                    "('<ip> <domain> <dc_fqdn>') or Kerberos/LDAP-by-name will fail")
+    return ("DNS resolution", OK, "domain/DC names resolve (or IP is used directly)")
+
+
+def _parse_smb2_time(text):
+    m = re.search(r"date:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", text or "")
+    if not m:
+        return None
+    try:
+        return datetime.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def check_clock_skew(target) -> tuple:
+    """Kerberos rejects auth when the client clock differs from the DC by >5 min (KRB_AP_ERR_SKEW) —
+    then kerberoast/AS-REP/certipy all fail mysteriously. Read the DC's time (read-only nmap smb2-time)
+    and compare. We only WARN/FAIL; syncing the clock is the operator's call."""
+    if not target:
+        return ("clock skew (Kerberos)", WARN, "no DC ip/host to check")
+    nmap = shutil.which("nmap")
+    if not nmap:
+        return ("clock skew (Kerberos)", WARN, "nmap not found — verify client clock vs DC by hand "
+                "(skew >5 min breaks all Kerberos auth)")
+    try:
+        r = subprocess.run([nmap, "-Pn", "-p445", "--script", "smb2-time", target],
+                           capture_output=True, text=True, timeout=40)
+    except Exception:  # noqa: BLE001
+        return ("clock skew (Kerberos)", WARN, "couldn't query DC time — verify the clock manually")
+    dc_time = _parse_smb2_time(r.stdout)
+    if not dc_time:
+        return ("clock skew (Kerberos)", WARN, "couldn't read DC time — verify manually (skew >5 min breaks Kerberos)")
+    skew = abs((datetime.datetime.utcnow() - dc_time).total_seconds())
+    if skew > 300:
+        return ("clock skew (Kerberos)", FAIL, f"client clock is ~{int(skew)}s off the DC — Kerberos WILL "
+                "fail. Sync first: sudo ntpdate <dc_ip>  (or timedatectl)")
+    if skew > 120:
+        return ("clock skew (Kerberos)", WARN, f"client clock ~{int(skew)}s off the DC — getting close to the "
+                "5-min Kerberos limit; consider: sudo ntpdate <dc_ip>")
+    return ("clock skew (Kerberos)", OK, f"clock within ~{int(skew)}s of the DC")
+
+
 def check_run_dir(run_dir) -> tuple:
     if not run_dir:
         return ("UBDEN run folder", WARN, "no --run-dir (give the UBDEN run folder before the offensive pass)")
@@ -140,8 +196,10 @@ def run_checks(*, scope=None, dc=None, domain=None, ip=None, user=None, password
     results.append(check_creds(password, hashes))
     results.append(check_context(domain, dc, ip))
     results.append(check_run_dir(run_dir))
+    results.append(check_dns(domain, dc, ip))
     if net:
         results += check_reachability(ip or dc)
+        results.append(check_clock_skew(ip or dc))
     return results
 
 
@@ -200,11 +258,17 @@ def _self_test() -> int:
         open(os.path.join(d, "engagement.json"), "w").write("{}")
         check("run-dir with engagement.json -> OK", check_run_dir(d)[1] == OK)
 
+    # clock-skew parse + DNS
+    check("smb2-time date parses", _parse_smb2_time("|   date: 2026-09-26T18:40:00\n") is not None)
+    check("smb2-time no date -> None", _parse_smb2_time("no date here") is None)
+    check("DNS unresolvable -> WARN", check_dns("nope.invalid-xyz-zzz.local", None, None)[1] == WARN)
+    check("DNS resolvable -> OK", check_dns("localhost", None, None)[1] == OK)
+
     # end-to-end (net off) never crashes and returns a verdict
     res = run_checks(scope=None, domain="corp.local", ip="10.0.0.10", password="pw", net=False)
     check("run_checks returns a NO-GO verdict when scope missing", verdict(res)[0] is False)
 
-    total = 16
+    total = 20
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
