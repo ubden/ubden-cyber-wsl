@@ -37,7 +37,7 @@ def to_ubden_finding(f: dict, run_dir: str, idx: int) -> dict:
         and not os.path.isabs(evidence_rel) and ".." not in evidence_rel.replace("\\", "/").split("/")
     if have_evidence:
         try:
-            have_evidence = os.path.getsize(evidence_abs) <= 25 * 1024 * 1024
+            have_evidence = os.path.getsize(evidence_abs) <= 25_000_000  # match analyst_review.evidence() exactly
         except OSError:
             have_evidence = False
     reproduction = (f.get("reproduction")

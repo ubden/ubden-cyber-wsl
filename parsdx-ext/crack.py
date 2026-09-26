@@ -21,8 +21,18 @@ TGS_RE = re.compile(r"\$krb5tgs\$\d+\$\*?([^$*]+)\$([^$*]+)\$")       # (user, r
 ASREP_RE = re.compile(r"\$krb5asrep\$\d+\$([^@$\s]+)[@$]([^:@$\s]+)")  # (user, realm)
 HASHLINE_RE = re.compile(r"(\$krb5(?:tgs|asrep)\$\S+)")
 
-# hashcat modes
-MODE = {"kerberoast": 13100, "asrep": 18200}
+# hashcat modes depend on the Kerberos etype, NOT just the attack — RC4(23) vs AES128(17)/AES256(18).
+# Using 13100 for an AES ticket silently cracks nothing (modern AD defaults to AES).
+MODE = {
+    ("kerberoast", 23): 13100, ("kerberoast", 17): 19600, ("kerberoast", 18): 19700,
+    ("asrep", 23): 18200, ("asrep", 17): 19800, ("asrep", 18): 19900,
+}
+ETYPE_RE = re.compile(r"\$krb5(?:tgs|asrep)\$(\d+)\$")
+
+
+def _etype(hashline: str) -> int:
+    m = ETYPE_RE.search(hashline or "")
+    return int(m.group(1)) if m else 23
 
 
 def extract(run_dir: str) -> dict:
@@ -55,20 +65,27 @@ def prepare(run_dir: str, wordlist: str = "/usr/share/wordlists/rockyou.txt") ->
     for kind, items in data.items():
         if not items:
             continue
-        hf = os.path.join(hdir, f"{kind}.hash")
-        with open(hf, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(h for _, h in items) + "\n")
-        try:
-            os.chmod(hf, 0o600)
-        except OSError:
-            pass
-        cmds[kind] = {
-            "count": len(items),
-            "file": os.path.relpath(hf, run_dir),
-            "hashcat": f"hashcat -m {MODE[kind]} {hf} {wordlist}",
-            "hashcat_show": f"hashcat -m {MODE[kind]} {hf} --show",
-            "john": f"john --format=krb5{'tgs' if kind=='kerberoast' else 'asrep'} --wordlist={wordlist} {hf}",
-        }
+        by_etype: dict[int, list[str]] = {}
+        for _account, h in items:
+            by_etype.setdefault(_etype(h), []).append(h)
+        for et, hashes in sorted(by_etype.items()):
+            mode = MODE.get((kind, et))
+            label = f"{kind}_et{et}"
+            hf = os.path.join(hdir, f"{label}.hash")
+            with open(hf, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(hashes) + "\n")
+            try:
+                os.chmod(hf, 0o600)
+            except OSError:
+                pass
+            jfmt = "krb5tgs" if kind == "kerberoast" else "krb5asrep"
+            cmds[label] = {
+                "count": len(hashes), "etype": et, "file": os.path.relpath(hf, run_dir),
+                "hashcat": (f"hashcat -m {mode} {hf} {wordlist}" if mode
+                            else f"# unknown etype {et} — check hashcat mode manually"),
+                "hashcat_show": (f"hashcat -m {mode} {hf} --show" if mode else ""),
+                "john": f"john --format={jfmt} --wordlist={wordlist} {hf}",  # john auto-detects etype
+            }
     return cmds
 
 
@@ -92,7 +109,10 @@ def ingest_cracked(run_dir: str, show_file: str) -> list[dict]:
         if not hm:
             continue
         hashline = hm.group(1)
-        kind, account = hash_to_account.get(hashline, ("kerberoast", "?"))
+        got = hash_to_account.get(hashline)
+        if not got:
+            continue  # cracked hash we didn't collect -> skip, never emit a "?" finding
+        kind, account = got
         findings.append({
             "type": "cracked_credential",
             "title": f"Service-account password CRACKED offline: {account}",
@@ -138,10 +158,10 @@ def _self_test() -> int:
         check("extract asrep AES", len(ex["asrep"]) == 1 and ex["asrep"][0][0] == "CORP.LOCAL\\jdoe")
 
         cmds = prepare(d, wordlist="/wl.txt")
-        check("hash files written", os.path.isfile(os.path.join(pdir, "hashes", "kerberoast.hash")))
-        check("hashcat mode 13100 for kerberoast", "-m 13100" in cmds["kerberoast"]["hashcat"])
-        check("hashcat mode 18200 for asrep", "-m 18200" in cmds["asrep"]["hashcat"])
-        check("hash file 0600", oct(os.stat(os.path.join(pdir, "hashes", "kerberoast.hash")).st_mode)[-3:] == "600")
+        check("RC4 kerberoast (etype23) -> mode 13100", "-m 13100" in cmds["kerberoast_et23"]["hashcat"])
+        check("AES256 kerberoast (etype18) -> mode 19700", "-m 19700" in cmds["kerberoast_et18"]["hashcat"])
+        check("AES256 AS-REP (etype18) -> mode 19900", "-m 19900" in cmds["asrep_et18"]["hashcat"])
+        check("hash file 0600", oct(os.stat(os.path.join(pdir, "hashes", "kerberoast_et23.hash")).st_mode)[-3:] == "600")
 
         # ingest a mock hashcat --show output
         show = os.path.join(d, "show.txt")

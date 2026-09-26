@@ -21,6 +21,7 @@ TECHNIQUES = {
     "T1550.002": ("Pass the Hash", "lateral-movement"),
     "T1210":     ("Exploitation of Remote Services", "lateral-movement"),
     "T1069.002": ("Permission Groups Discovery: Domain Groups", "discovery"),
+    "T1110.002": ("Brute Force: Password Cracking", "credential-access"),  # crack.py cracked_credential
 }
 
 
@@ -45,7 +46,7 @@ def build_layer(findings: list[dict], name: str = "PARSDX Engagement",
     counts: dict[str, int] = {}
     for f in findings:
         tid = f.get("technique")
-        if tid:
+        if tid and tid in TECHNIQUES:  # only emit known techniques (no "Unknown technique" leaking to the layer)
             counts[tid] = counts.get(tid, 0) + 1
     techniques = []
     for tid, n in sorted(counts.items()):
@@ -99,6 +100,8 @@ def _self_test() -> int:
     check("layer counts kerberoast twice", ids.get("T1558.003") == 2)
     check("layer has ADCS technique", "T1649" in ids)
     check("None technique excluded from layer", None not in ids)
+    check("unknown technique id excluded from layer", "T9999" not in ids)
+    check("T1110.002 (cracked cred) is known", "T1110.002" in TECHNIQUES)
     check("layer schema fields present", layer["domain"] == "enterprise-attack"
           and layer["versions"]["layer"] == "4.5")
 
@@ -108,7 +111,7 @@ def _self_test() -> int:
     reloaded = json.load(open(p))
     check("layer writes valid json", reloaded["name"] == "PARSDX Engagement")
 
-    total = 7
+    total = 9
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 

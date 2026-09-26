@@ -16,7 +16,7 @@ FAILED=()
 
 echo "[1/4] APT paketleri (repo araclari)"
 apt-get update
-for p in ldap-utils smbclient hashcat responder krb5-user python3-pip pipx seclists dnsutils; do
+for p in ldap-utils smbclient hashcat john nmap ntpdate responder krb5-user python3-pip pipx seclists dnsutils; do
   apt-get install -y --no-install-recommends "$p" || FAILED+=("apt:$p")
 done
 
