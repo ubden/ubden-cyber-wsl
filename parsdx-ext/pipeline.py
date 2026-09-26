@@ -15,7 +15,6 @@ existing evidence; --dry-run runs nothing live; --no-report skips report regener
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import os
 import sys
@@ -177,8 +176,10 @@ def _self_test() -> int:
                     "recommendation": "rotate", "technique": "T1110.002"}],
                   open(os.path.join(pdir, "cracked.json"), "w"))
         s2 = run(d, {"user": "svc", "password": "P"}, skip_attack=True, no_report=True)
-        check("cracked.json folds into findings + scored", s2["findings"] == 4
-              and any(f for f in parse.parse_run(d)))  # parse still returns base 3; cracked added in run()
+        rv2 = json.load(open(os.path.join(d, "review.json")))
+        crk = [f for f in rv2["findings"] if "cracked" in f["title"].lower()]
+        check("cracked.json folds in + scored (real check)",
+              s2["findings"] == 4 and len(crk) == 1 and crk[0]["cvss"].startswith("CVSS:3.1"))
 
         # now simulate an executed DCSync -> DA truly reached
         open(os.path.join(pdir, "dcsync_dump.txt"), "w").write("krbtgt:502:aad3b...:31d6...")

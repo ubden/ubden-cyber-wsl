@@ -132,11 +132,12 @@ def check_dns(domain, dc, ip) -> tuple:
 
 
 def _parse_smb2_time(text):
-    m = re.search(r"date:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", text or "")
+    # nmap prints "date: 2017-07-28 03:06:34" (SPACE), not a 'T' — accept either.
+    m = re.search(r"date:\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", text or "")
     if not m:
         return None
     try:
-        return datetime.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
+        return datetime.datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
 
@@ -159,7 +160,8 @@ def check_clock_skew(target) -> tuple:
     dc_time = _parse_smb2_time(r.stdout)
     if not dc_time:
         return ("clock skew (Kerberos)", WARN, "couldn't read DC time — verify manually (skew >5 min breaks Kerberos)")
-    skew = abs((datetime.datetime.utcnow() - dc_time).total_seconds())
+    now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)  # naive UTC to match smb2-time
+    skew = abs((now_utc - dc_time).total_seconds())
     if skew > 300:
         return ("clock skew (Kerberos)", FAIL, f"client clock is ~{int(skew)}s off the DC — Kerberos WILL "
                 "fail. Sync first: sudo ntpdate <dc_ip>  (or timedatectl)")
@@ -196,10 +198,27 @@ def run_checks(*, scope=None, dc=None, domain=None, ip=None, user=None, password
     results.append(check_creds(password, hashes))
     results.append(check_context(domain, dc, ip))
     results.append(check_run_dir(run_dir))
-    results.append(check_dns(domain, dc, ip))
+    # Parse scope so network probes (reachability/clock/DNS) NEVER touch an out-of-scope host —
+    # doctor sends packets (TCP connect, nmap) so it must respect --scope like attack.py does.
+    nets, hosts = ([], set())
+    if scope and os.path.isfile(scope):
+        try:
+            nets, hosts = attack.load_scope(scope)
+        except OSError:
+            pass
     if net:
-        results += check_reachability(ip or dc)
-        results.append(check_clock_skew(ip or dc))
+        target = ip or dc
+        if not (nets or hosts):
+            results.append(("network checks", WARN,
+                            "no valid --scope — network probes skipped (fail-closed; add --scope to enable "
+                            "reachability + clock-skew + DNS checks)"))
+        elif target and not attack.in_scope(target, nets, hosts):
+            results.append(("network checks", FAIL,
+                            f"target {target} is NOT in --scope — refusing to probe an out-of-scope host"))
+        else:
+            results += check_reachability(target)
+            results.append(check_clock_skew(target))
+            results.append(check_dns(domain, dc, ip))
     return results
 
 
@@ -258,17 +277,28 @@ def _self_test() -> int:
         open(os.path.join(d, "engagement.json"), "w").write("{}")
         check("run-dir with engagement.json -> OK", check_run_dir(d)[1] == OK)
 
-    # clock-skew parse + DNS
-    check("smb2-time date parses", _parse_smb2_time("|   date: 2026-09-26T18:40:00\n") is not None)
+    # clock-skew parse (nmap prints a SPACE, not 'T') + DNS
+    check("smb2-time parses nmap space form", _parse_smb2_time("|   date: 2026-09-26 18:40:00\n") is not None)
+    check("smb2-time also parses T form", _parse_smb2_time("date: 2026-09-26T18:40:00") is not None)
     check("smb2-time no date -> None", _parse_smb2_time("no date here") is None)
     check("DNS unresolvable -> WARN", check_dns("nope.invalid-xyz-zzz.local", None, None)[1] == WARN)
     check("DNS resolvable -> OK", check_dns("localhost", None, None)[1] == OK)
+
+    # scope-gates network probes (no live probe fired: gated branch returns first)
+    with tempfile.TemporaryDirectory() as sd:
+        sp = os.path.join(sd, "s.txt"); open(sp, "w").write("10.0.0.0/24\n")
+        rr = run_checks(scope=sp, ip="8.8.8.8", password="pw", net=True)
+        check("net probes REFUSED for out-of-scope target",
+              any(n == "network checks" and st == FAIL for n, st, _ in rr))
+        rr2 = run_checks(scope=None, ip="8.8.8.8", password="pw", net=True)
+        check("net probes skipped without scope",
+              any(n == "network checks" and st == WARN for n, st, _ in rr2))
 
     # end-to-end (net off) never crashes and returns a verdict
     res = run_checks(scope=None, domain="corp.local", ip="10.0.0.10", password="pw", net=False)
     check("run_checks returns a NO-GO verdict when scope missing", verdict(res)[0] is False)
 
-    total = 20
+    total = 23
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
