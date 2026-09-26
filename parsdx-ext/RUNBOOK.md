@@ -77,6 +77,16 @@ python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt \
 → `<RUN>/parsdx/SUMMARY.md` çıkar: bulgular + kill-chain + zincir severity. Claude'a yapıştır.
 Bir şey ters giderse: `touch "<RUN>/STOP"` → çalışan zincir bir sonraki adımdan önce durur (kill-switch).
 
+**f2) (Opsiyonel) Toplanan hash'leri OFFLINE kır — kilitleme riski yok:**
+```bash
+python3 parsdx-ext/crack.py "<RUN>"                     # .hash dosyaları + hashcat komutları
+hashcat -m 13100 "<RUN>/parsdx/hashes/kerberoast.hash" /usr/share/wordlists/rockyou.txt
+hashcat -m 13100 "<RUN>/parsdx/hashes/kerberoast.hash" --show > show.txt
+python3 parsdx-ext/crack.py "<RUN>" --results show.txt  # kırılanları bulguya çevir
+python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --skip-attack --no-report   # rapora işle
+```
+Tamamen çevrimdışı (ağa dokunmaz). "Roastable" → "şifresi kırıldı = gerçek kimlik" bulgusuna döner.
+
 **g) (Yalnız gerekliyse, Claude onaylarsa) yazma/dump adımları:**
 ```bash
 python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --scope scope.txt ... \

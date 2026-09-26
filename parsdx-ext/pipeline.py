@@ -21,10 +21,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import attack, parse, score, attck, narrate, coverage, emit  # noqa: E402
+import attack, parse, score, attck, narrate, coverage, emit, remediation  # noqa: E402
 
 STAGE_ORDER = {"unauth_smb": 0, "gpp_password": 1, "asrep_roast": 1, "kerberoast": 1,
-               "default_creds": 2, "local_admin": 3, "coercion": 4, "adcs_esc": 4, "dcsync": 5}
+               "cracked_credential": 2, "default_creds": 2, "local_admin": 3,
+               "coercion": 4, "adcs_esc": 4, "dcsync": 5}
 
 
 def order_chain(findings):
@@ -65,6 +66,15 @@ def run(run_dir, creds, *, nets=None, hosts_allow=None, skip_attack=False, dry_r
                              dry_run=dry_run, assume_yes=assume_yes, out_dir=pdir)
 
     findings = parse.parse_run(run_dir)
+    # fold in any offline-cracked credentials the operator ingested via crack.py (parsdx/cracked.json)
+    cj = os.path.join(pdir, "cracked.json")
+    if os.path.isfile(cj):
+        try:
+            for cf in json.load(open(cj, encoding="utf-8")):
+                cf.setdefault("evidence", "parsdx/cracked.json")
+                findings.append(cf)
+        except (OSError, ValueError):
+            pass
     for f in findings:
         score.score_finding(f)
     attck.tag_findings(findings)
@@ -75,6 +85,7 @@ def run(run_dir, creds, *, nets=None, hosts_allow=None, skip_attack=False, dry_r
     cs = score.chain_severity(chain, da)
     narr_path = narrate.write_narrative(chain, da, os.path.join(pdir, "KILL_CHAIN.md"), lang)
     cov_json, cov_md = coverage.write_matrix(run_dir)
+    rem_path = remediation.write_roadmap(findings, os.path.join(pdir, "REMEDIATION.md"))
 
     emit_res = emit.emit_findings(run_dir, findings)
     report_rc = None
@@ -86,7 +97,8 @@ def run(run_dir, creds, *, nets=None, hosts_allow=None, skip_attack=False, dry_r
         "artifacts": {"attack_layer": os.path.relpath(layer_path, run_dir),
                       "kill_chain": os.path.relpath(narr_path, run_dir),
                       "coverage_json": os.path.relpath(cov_json, run_dir),
-                      "coverage_md": os.path.relpath(cov_md, run_dir)},
+                      "coverage_md": os.path.relpath(cov_md, run_dir),
+                      "remediation": os.path.relpath(rem_path, run_dir)},
         "report_regenerated": report_rc == 0 if report_rc is not None else False,
     }
     with open(os.path.join(pdir, "SUMMARY.json"), "w", encoding="utf-8") as fh:
@@ -155,7 +167,18 @@ def _self_test() -> int:
         check("kill-chain conclusion is honest (not achieved)",
               "ulaşmadı" in open(os.path.join(pdir, "KILL_CHAIN.md"), encoding="utf-8").read())
         check("artifacts written", all(os.path.exists(os.path.join(d, s["artifacts"][k]))
-              for k in ("attack_layer", "kill_chain", "coverage_json")))
+              for k in ("attack_layer", "kill_chain", "coverage_json", "remediation")))
+        check("remediation roadmap has content", "Düzeltme Yol Haritası" in
+              open(os.path.join(pdir, "REMEDIATION.md"), encoding="utf-8").read())
+
+        # cracked.json (from crack.py) folds into findings as a cracked_credential
+        json.dump([{"type": "cracked_credential", "title": "cracked: CORP\\svc_sql",
+                    "asset": "CORP\\svc_sql", "severity": "high", "description": "d", "impact": "i",
+                    "recommendation": "rotate", "technique": "T1110.002"}],
+                  open(os.path.join(pdir, "cracked.json"), "w"))
+        s2 = run(d, {"user": "svc", "password": "P"}, skip_attack=True, no_report=True)
+        check("cracked.json folds into findings + scored", s2["findings"] == 4
+              and any(f for f in parse.parse_run(d)))  # parse still returns base 3; cracked added in run()
 
         # now simulate an executed DCSync -> DA truly reached
         open(os.path.join(pdir, "dcsync_dump.txt"), "w").write("krbtgt:502:aad3b...:31d6...")
@@ -165,7 +188,7 @@ def _self_test() -> int:
         mode = oct(os.stat(os.path.join(pdir, "SUMMARY.json")).st_mode)[-3:]
         check("SUMMARY.json is 0600", mode == "600")
 
-    total = 8
+    total = 10
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
