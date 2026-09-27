@@ -229,9 +229,14 @@ def build_plan(ctx, hosts, user, password, hashes, enable_writes, allow_dcsync) 
         plan.append(Step(f"auth_matrix_{h}", "nxc", ["nxc", "smb", h, *auth_flags(), "-t", "1"],
                          auth=True, target=h, note="local-admin check (single host, 1 thread)"))
     for h in hosts:
+        # EXCLUDE_FILTER defaults to only "print$,ipc$", so on any host where the credential can read
+        # C$ the spider walks the ENTIRE system drive: measured 2026-09-27 against a real Windows
+        # Server 2025 DC, that hit the 120 s step timeout; excluding the admin shares finished in 3 s
+        # with the same 14 files. SYSVOL and NETLOGON stay IN -- GPP cpassword lives there.
         plan.append(Step(f"share_triage_{h}", "nxc",
-                         ["nxc", "smb", h, *auth_flags(), "-t", "1", "-M", "spider_plus"],
-                         auth=True, target=h, note="readable-share crawl (read-only)"))
+                         ["nxc", "smb", h, *auth_flags(), "-t", "1", "-M", "spider_plus",
+                          "-o", "EXCLUDE_FILTER=print$,ipc$,c$,admin$"],
+                         auth=True, target=h, note="readable-share crawl (read-only, admin shares excluded)"))
     plan.append(Step("coerce_scan", "coercer",
                      ["coercer", "scan", "-u", user, *(["--hashes", hashes] if hashes else ["-p", password]),
                       "-d", dom, "-t", dc_target],
@@ -526,6 +531,11 @@ def _self_test() -> int:
         plan = build_plan(ctx, ctx.hosts, "u", "P", None, False, False)
         names = [s.name for s in plan]
         check("per-host auth steps expanded", "auth_matrix_10.0.0.10" in names and "auth_matrix_10.0.0.20" in names)
+        sp = next(s for s in plan if s.name.startswith("share_triage"))
+        check("spider excludes admin shares (C$ walk = 120 s timeout)",
+              "EXCLUDE_FILTER=print$,ipc$,c$,admin$" in sp.argv)
+        check("spider still covers SYSVOL/NETLOGON (GPP cpassword)",
+              "sysvol" not in " ".join(sp.argv).lower() and "netlogon" not in " ".join(sp.argv).lower())
         check("no write step by default", not any(s.writes for s in plan))
         check("nxc steps single-thread", all("-t" in s.argv and s.argv[s.argv.index("-t")+1] == "1"
                                               for s in plan if s.name.startswith("auth_matrix")))
@@ -590,7 +600,7 @@ def _self_test() -> int:
                              nets=[ipaddress.ip_network("10.0.0.0/24")], skip_preflight=True)
         check("STOP file aborts the run", any(e["status"] == "aborted_stop_file" for e in res2["events"]))
 
-    total = 32
+    total = 34
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
