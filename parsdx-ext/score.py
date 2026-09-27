@@ -79,7 +79,17 @@ def base_score(vector: str) -> tuple[float, str]:
 
 # Suggested base vectors per finding type (analyst confirms/adjusts).
 TYPE_VECTORS = {
-    "adcs_esc":        "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",  # ESC1/ESC8 -> DA
+    # AD CS is NOT one severity. certipy flags a dozen ESC classes and they are not comparable:
+    # ESC1/6/8 hand a low-privileged user a DA certificate; ESC3/9/10/13/15/16/17 need a further
+    # step; ESC4/5/7 are ACL problems whose severity depends entirely on WHO holds the right --
+    # parse.py resolves that and only emits the *_direct type when a non-privileged principal does.
+    # Measured 2026-09-27 on a stock Windows Server 2025 CA: one flat "critical" turned 47 certipy
+    # lines into 43 Critical findings, of which exactly ONE was real.
+    "adcs_esc":         "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",  # legacy alias -> Critical
+    "adcs_esc_direct":  "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",  # ESC1/6/8: enroll -> DA
+    "adcs_esc_chain":   "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:H/I:H/A:H",  # needs a further step
+    "adcs_esc_acl":     "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",  # writable object -> takeover of it
+    "adcs_hygiene":     "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:L/I:N/A:N",  # not reachable by a low-priv user
     "dcsync":          "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H",
     "cracked_credential": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",  # password recovered -> account takeover, 8.8
     "local_admin":     "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",  # cred (needs auth) opens host (Pwn3d!) -> 8.8

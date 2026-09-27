@@ -13,32 +13,143 @@ import sys
 # ---- individual tool parsers -------------------------------------------------
 
 
+# Groups that already hold the privilege an ESC would grant. "Enterprise Admins can rewrite a
+# template" is not a finding -- it is what Enterprise Admins are. certipy cannot know this and
+# flags it anyway, so the filtering has to happen here.
+PRIVILEGED_PRINCIPALS = (
+    "domain admins", "enterprise admins", "administrators", "domain controllers",
+    "enterprise domain controllers", "system", "enterprise read-only domain controllers",
+)
+
+# ESC classes are not one severity. Direct = a low-privileged enrollment yields a certificate that
+# authenticates as a privileged principal. Chain = a further step is required. ACL = the finding is
+# "this object is writable", whose weight depends on who can write it.
+ESC_KIND = {
+    "ESC1": "direct", "ESC6": "direct", "ESC8": "direct", "ESC11": "direct",
+    "ESC2": "chain", "ESC3": "chain", "ESC9": "chain", "ESC10": "chain",
+    "ESC13": "chain", "ESC14": "chain", "ESC15": "chain", "ESC16": "chain", "ESC17": "chain",
+    "ESC4": "acl", "ESC5": "acl", "ESC7": "acl",
+}
+# ESC4 is "this template can be REWRITTEN by someone who should not be able to". The rights that
+# grant that are ownership and DACL/owner/generic writes. "Write Property Enroll" is NOT one of
+# them -- it is the enrollment permission expressed as a property write, and including it turned
+# three stock templates (Machine/EFS/User, enrollable by Domain Computers/Domain Users as designed)
+# into High findings. Measured 2026-09-27.
+_CTRL_HEADERS = ("Owner", "Full Control Principals", "Write Owner Principals",
+                 "Write Dacl Principals", "Write Property Principals")
+
+
+def _principals(block: str, header: str) -> list[str]:
+    """certipy prints a principal list as one value line plus deeply-indented continuation lines."""
+    m = re.search(rf"{re.escape(header)}\s*:\s*(.+(?:\n\s{{28,}}\S.*)*)", block)
+    if not m:
+        return []
+    return [x.strip() for x in m.group(1).split("\n") if x.strip()]
+
+
+def _unprivileged(principals: list[str]) -> list[str]:
+    return [p for p in principals
+            if not any(k in p.lower() for k in PRIVILEGED_PRINCIPALS)]
+
+
 def parse_certipy(text: str) -> list[dict]:
-    """certipy find -vulnerable -stdout -> one finding per (template, ESC)."""
+    """certipy find -vulnerable -stdout -> findings, with the noise separated from the vulnerability.
+
+    A stock CA makes certipy shout. Measured 2026-09-27 against a freshly installed Windows Server
+    2025 Enterprise CA: 47 ESC lines, of which 23 sat on DISABLED templates (cannot be enrolled at
+    all), 12 were ESC4 "template is owned by user" where the owner is Enterprise Admins, and 7 were
+    enrollable only by privileged groups. Exactly ONE -- the ESC1 we deliberately planted -- was
+    reachable by a low-privileged user. Emitting all 47 as Critical is severity inflation that would
+    destroy a client report, so each ESC is classified by (a) whether the template is enabled and
+    (b) whether a NON-privileged principal actually holds the right the ESC depends on.
+    Nothing is discarded: what is filtered out is summarised in one hygiene finding and the full
+    certipy output stays in the evidence file.
+    """
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
     findings = []
-    current_tpl = None
-    for line in text.splitlines():
-        m = re.search(r"Template Name\s*:\s*(.+)", line)
-        if m:
-            current_tpl = m.group(1).strip()
+    suppressed = {"disabled": [], "privileged_only": []}
+
+    for block in re.split(r"(?=^\s*(?:Template Name|CA Name)\s+:)", text, flags=re.M):
+        escs = re.findall(r"\b(ESC\d+)\b\s*:\s*(.+)", block)
+        if not escs:
             continue
-        esc = re.search(r"\b(ESC\d+)\b\s*:\s*(.+)", line)
-        if esc:
+        tm = re.search(r"Template Name\s*:\s*(.+)", block)
+        cm = re.search(r"CA Name\s*:\s*(.+)", block)
+        name = (tm or cm).group(1).strip() if (tm or cm) else "AD CS"
+        is_ca = tm is None and cm is not None
+        enabled = (re.search(r"Enabled\s*:\s*(\w+)", block) or [None, "True"])[1]
+
+        enroll_unpriv = _unprivileged(_principals(block, "Enrollment Rights"))
+        ctrl = []
+        for h in _CTRL_HEADERS:
+            ctrl += _principals(block, h)
+        ctrl_unpriv = _unprivileged(ctrl)
+
+        for esc, detail in escs:
+            detail = detail.strip()
+            kind = ESC_KIND.get(esc, "chain")
+
+            # A disabled template cannot be enrolled, so no ESC on it is reachable.
+            if not is_ca and enabled == "False":
+                suppressed["disabled"].append(f"{name}:{esc}")
+                continue
+            # The right the ESC depends on is held only by principals who are already privileged.
+            # ⚠️ Suppress ONLY on positive evidence. If certipy printed no principal list at all we
+            # cannot tell who holds the right, and "no data" must never read as "not exploitable" --
+            # that is the silent-zero failure this whole toolkit exists to avoid. Keep the finding.
+            holders = ctrl if kind == "acl" else _principals(block, "Enrollment Rights")
+            holder_unpriv = ctrl_unpriv if kind == "acl" else enroll_unpriv
+            if holders and not holder_unpriv:
+                suppressed["privileged_only"].append(f"{name}:{esc}")
+                continue
+
+            ftype = {"direct": "adcs_esc_direct", "chain": "adcs_esc_chain",
+                     "acl": "adcs_esc_acl"}[kind]
+            who = ", ".join(sorted(set(holder_unpriv))[:3]) or "principals not reported by certipy"
             findings.append({
-                "type": "adcs_esc",
-                "title": f"AD CS {esc.group(1)} — abusable certificate template"
-                         + (f" ({current_tpl})" if current_tpl else ""),
-                "asset": current_tpl or "AD CS",
+                "type": ftype,
+                "title": f"AD CS {esc} on {'CA' if is_ca else 'template'} '{name}'",
+                "asset": name,
                 "technique": "T1649",  # Steal or Forge Authentication Certificates
-                "root_cause": f"{esc.group(1)}: {esc.group(2).strip()}",
-                "description": f"Certipy flagged {esc.group(1)} on template "
-                               f"'{current_tpl or '?'}': {esc.group(2).strip()}",
-                "impact": "A low-privileged user can enroll a certificate that authenticates as a "
-                          "privileged principal, leading to domain privilege escalation.",
-                "recommendation": "Remove client-authentication EKU or enrollee-supplied-subject on "
-                                  "the template, restrict enrollment rights, enable manager approval, "
-                                  "and enforce CA enrollment restrictions.",
+                "root_cause": f"{esc}: {detail}",
+                "description": f"Certipy flagged {esc} on {'CA' if is_ca else 'template'} '{name}': "
+                               f"{detail} " + (
+                                   f"The right this depends on is held by a non-privileged principal "
+                                   f"({who}), so it is reachable by an ordinary domain user."
+                                   if holder_unpriv else
+                                   "Certipy did not report which principals hold this right, so it "
+                                   "could NOT be ruled out - verify the ACL by hand."),
+                "impact": "A low-privileged user can obtain a certificate that authenticates as a "
+                          "privileged principal, leading to domain privilege escalation."
+                          if kind == "direct" else
+                          "The flagged object can be abused toward privileged certificate issuance; "
+                          "a further step is required to reach domain compromise.",
+                "recommendation": "Remove enrollee-supplied-subject or the client-authentication "
+                                  "EKU, restrict enrollment and object-control rights to "
+                                  "administrative groups, and enable manager approval.",
+                "evidence_principals": sorted(set(holder_unpriv)),
             })
+
+    n_dis, n_priv = len(suppressed["disabled"]), len(suppressed["privileged_only"])
+    if n_dis or n_priv:
+        findings.append({
+            "type": "adcs_hygiene",
+            "title": f"AD CS: {n_dis + n_priv} certipy flags not reachable by a low-privileged user",
+            "asset": "AD CS",
+            "technique": "T1649",
+            "root_cause": "certipy flags every ESC condition regardless of whether an unprivileged "
+                          "principal can reach it.",
+            "description": f"{n_dis} flag(s) sit on DISABLED templates (they cannot be enrolled) and "
+                           f"{n_priv} are held only by already-privileged groups (Domain/Enterprise "
+                           f"Admins). Listed for completeness, not as exploitable findings. "
+                           f"Disabled: {', '.join(suppressed['disabled'][:8])}"
+                           f"{' ...' if n_dis > 8 else ''}. "
+                           f"Privileged-only: {', '.join(suppressed['privileged_only'][:8])}"
+                           f"{' ...' if n_priv > 8 else ''}.",
+            "impact": "No direct impact: an attacker without existing privilege cannot use these.",
+            "recommendation": "Remove or disable unused templates and review ownership during "
+                              "routine AD CS hygiene.",
+        })
     return findings
 
 
@@ -198,20 +309,57 @@ def _self_test() -> int:
         if cond:
             ok += 1
 
+    # Fixture shaped like real `certipy find -vulnerable -stdout` on a stock Enterprise CA:
+    # one genuinely reachable ESC1, one disabled template, one ESC4 owned only by Enterprise Admins.
     certipy = """Certificate Templates
   0
     Template Name                       : UserAuth
+    Enabled                             : True
+    Permissions
+      Enrollment Permissions
+        Enrollment Rights               : CORP.LOCAL\\Domain Users
+      Object Control Permissions
+        Owner                           : CORP.LOCAL\\Enterprise Admins
     [!] Vulnerabilities
-      ESC1                              : 'CORP.LOCAL\\\\Domain Users' can enroll and supply subject
+      ESC1                              : 'CORP.LOCAL\\Domain Users' can enroll and supply subject
   1
-    Template Name                       : WebServer
+    Template Name                       : OldWebServer
+    Enabled                             : False
+    Permissions
+      Enrollment Permissions
+        Enrollment Rights               : CORP.LOCAL\\Domain Users
     [!] Vulnerabilities
-      ESC8                              : Web enrollment is enabled and vulnerable to NTLM relay
+      ESC1                              : Enrollee supplies subject
+  2
+    Template Name                       : Machine
+    Enabled                             : True
+    Permissions
+      Enrollment Permissions
+        Enrollment Rights               : CORP.LOCAL\\Domain Computers
+      Object Control Permissions
+        Owner                           : CORP.LOCAL\\Enterprise Admins
+        Write Dacl Principals           : CORP.LOCAL\\Domain Admins
+                                          CORP.LOCAL\\Enterprise Admins
+        Write Property Enroll           : CORP.LOCAL\\Domain Computers
+    [!] Vulnerabilities
+      ESC4                              : Template is owned by user.
 """
     cf = parse_certipy(certipy)
-    check("certipy: 2 ESC findings", len(cf) == 2)
-    check("certipy: ESC1 mapped to template UserAuth", cf[0]["asset"] == "UserAuth" and "ESC1" in cf[0]["root_cause"])
-    check("certipy: ATT&CK T1649", cf[0]["technique"] == "T1649")
+    real = [f for f in cf if f["type"] != "adcs_hygiene"]
+    hyg = [f for f in cf if f["type"] == "adcs_hygiene"]
+    check("certipy: only the reachable ESC1 is a finding", len(real) == 1 and real[0]["asset"] == "UserAuth")
+    check("certipy: ESC1 typed as direct (Critical)", real[0]["type"] == "adcs_esc_direct")
+    check("certipy: ATT&CK T1649", real[0]["technique"] == "T1649")
+    check("certipy: disabled template suppressed", "OldWebServer:ESC1" in hyg[0]["description"])
+    check("certipy: ESC4 owned only by admins suppressed", "Machine:ESC4" in hyg[0]["description"])
+    check("certipy: 'Write Property Enroll' is NOT template control",
+          all("Machine" not in f["asset"] for f in real))
+    check("certipy: suppressed ones are reported, not hidden", len(hyg) == 1 and "2 certipy flags" in hyg[0]["title"])
+    # No principal list at all must NOT read as "not exploitable" -- keep it and say so.
+    bare = parse_certipy("    Template Name : UserAuth\n      ESC1 : enrollee supplies subject")
+    bare_real = [f for f in bare if f["type"] != "adcs_hygiene"]
+    check("certipy: missing principal data keeps the finding (no silent drop)", len(bare_real) == 1)
+    check("certipy: says the ACL could not be ruled out", "could NOT be ruled out" in bare_real[0]["description"])
 
     krb = "$krb5tgs$23$*svc_sql$CORP.LOCAL$MSSQLSvc/sql01:1433*$abcdef0123..."
     kf = parse_kerberoast(krb)
@@ -255,7 +403,7 @@ def _self_test() -> int:
         check("parse_run tags each finding with its real evidence file",
               all("evidence" in f and f["evidence"].startswith("parsdx/") for f in allf))
 
-    total = 13
+    total = 19
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
