@@ -187,18 +187,36 @@ def read_lockout_policy_ldap(dc, domain, user, password, pinned_ip=None) -> Lock
     except ImportError as exc:  # pragma: no cover - env dependent
         raise LockoutRisk("ldap3 not installed; cannot read live lockout policy") from exc
     base = ",".join("DC=" + l for l in domain.lower().split(".") if l)
-    tls = Tls(validate=ssl.CERT_REQUIRED, valid_names=[dc])
-    server = Server(pinned_ip or dc, port=636, use_ssl=True, get_info=NONE, tls=tls, connect_timeout=5)
-    with Connection(server, user=user, password=password, auto_bind=True,
-                    read_only=True, receive_timeout=10, raise_exceptions=True) as conn:
-        conn.search(base, "(objectClass=domainDNS)", search_scope=BASE,
-                    attributes=["lockoutThreshold", "lockOutObservationWindow", "lockoutDuration"],
-                    size_limit=1, time_limit=5)
-        if not conn.entries:
-            raise LockoutRisk("Domain root returned no lockout attributes")
-        e = conn.entries[0]
-        attrs = {a: e[a].value for a in ("lockoutThreshold", "lockOutObservationWindow", "lockoutDuration") if a in e}
-        return parse_lockout_policy(attrs, source=f"ldaps://{dc}")
+    wanted = ("lockoutThreshold", "lockOutObservationWindow", "lockoutDuration")
+    # A bare "svc_test" is not a valid LDAP simple-bind identity — AD wants a UPN
+    # (user@domain) or DOMAIN\user. Normalise, or every real engagement binds as invalid.
+    if user and "@" not in user and "\\" not in user:
+        user = f"{user}@{domain}"
+
+    def _read(tls, label):
+        server = Server(pinned_ip or dc, port=636, use_ssl=True, get_info=NONE, tls=tls, connect_timeout=5)
+        with Connection(server, user=user, password=password, auto_bind=True,
+                        read_only=True, receive_timeout=10, raise_exceptions=True) as conn:
+            conn.search(base, "(objectClass=domainDNS)", search_scope=BASE,
+                        attributes=list(wanted), size_limit=1, time_limit=5)
+            if not conn.entries:
+                raise LockoutRisk("Domain root returned no lockout attributes")
+            e = conn.entries[0]
+            attrs = {a: e[a].value for a in wanted if a in e}
+            return parse_lockout_policy(attrs, source=f"ldaps://{dc} ({label})")
+
+    # Strict first. Real DCs almost always present a self-signed/enterprise-CA cert we don't trust,
+    # which would leave us with NO policy at all — so fall back to an unvalidated TLS bind (still
+    # encrypted; this is what every AD tool does by default) and say so out loud.
+    try:
+        return _read(Tls(validate=ssl.CERT_REQUIRED, valid_names=[dc]), "verified cert")
+    except Exception as exc:  # noqa: BLE001
+        blob = (type(exc).__name__ + " " + str(exc)).lower()
+        if "certificate" not in blob and "ssl" not in blob and "socket" not in blob:
+            raise  # a real bind/credential failure must stay a failure
+        print(f"[guard] LDAPS cert not verifiable ({type(exc).__name__}); retrying WITHOUT cert "
+              f"validation to read the lockout policy (connection still encrypted).", file=sys.stderr)
+        return _read(Tls(validate=ssl.CERT_NONE), "UNVERIFIED cert")
 
 
 def _self_test() -> int:

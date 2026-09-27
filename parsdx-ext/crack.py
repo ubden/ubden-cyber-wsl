@@ -79,24 +79,38 @@ def prepare(run_dir: str, wordlist: str = "/usr/share/wordlists/rockyou.txt") ->
             except OSError:
                 pass
             jfmt = "krb5tgs" if kind == "kerberoast" else "krb5asrep"
+            jpot = os.path.join(hdir, "john.pot")
             cmds[label] = {
                 "count": len(hashes), "etype": et, "file": os.path.relpath(hf, run_dir),
                 "hashcat": (f"hashcat -m {mode} {hf} {wordlist}" if mode
                             else f"# unknown etype {et} — check hashcat mode manually"),
                 "hashcat_show": (f"hashcat -m {mode} {hf} --show" if mode else ""),
-                "john": f"john --format={jfmt} --wordlist={wordlist} {hf}",  # john auto-detects etype
+                # --pot keeps john's results with the engagement AND gives ingest a file to read:
+                # `john --show` prints "?:password" for krb5tgs, losing the account entirely.
+                "john": f"john --format={jfmt} --wordlist={wordlist} --pot={jpot} {hf}",
+                "john_pot": jpot,
             }
     return cmds
 
 
+def _ct_key(hashline: str) -> str:
+    """The ciphertext blob after the final '$' — the one part every tool spells the same way.
+    john rewrites the header: GetNPUsers prints `$krb5asrep$23$user@dom.com:<chk>$<ct>` and john's
+    potfile stores `$krb5asrep$23$<chk>$<ct>`, so an exact-string lookup misses every AS-REP cracked
+    with john and ingest quietly reports 0. Measured 2026-09-27."""
+    return hashline.rsplit("$", 1)[-1].strip().lower()
+
+
 def ingest_cracked(run_dir: str, show_file: str) -> list[dict]:
-    """Read a hashcat `--show` (hash:password) output and turn each cracked hash into a finding.
-    Maps the cracked hash back to its account using the collected evidence. OFFLINE only."""
+    """Read a hashcat `--show` (hash:password) output — or a john potfile / `john --show`, whose
+    header differs — and turn each cracked hash into a finding. OFFLINE only."""
     data = extract(run_dir)
     hash_to_account = {}
+    by_ct = {}
     for kind, items in data.items():
         for account, hashline in items:
             hash_to_account[hashline] = (kind, account)
+            by_ct.setdefault(_ct_key(hashline), (kind, account))
     findings = []
     for line in open(show_file, encoding="utf-8", errors="replace").read().splitlines():
         if ":" not in line:
@@ -109,7 +123,7 @@ def ingest_cracked(run_dir: str, show_file: str) -> list[dict]:
         if not hm:
             continue
         hashline = hm.group(1)
-        got = hash_to_account.get(hashline)
+        got = hash_to_account.get(hashline) or by_ct.get(_ct_key(hashline))
         if not got:
             continue  # cracked hash we didn't collect -> skip, never emit a "?" finding
         kind, account = got
@@ -170,7 +184,19 @@ def _self_test() -> int:
         check("ingest maps cracked hash -> account", len(cracked) == 1 and cracked[0]["asset"] == "CORP.LOCAL\\svc_sql")
         check("cracked finding type + high sev", cracked[0]["type"] == "cracked_credential" and cracked[0]["severity"] == "high")
 
-    total = 8
+        # john rewrites the AS-REP header, so an exact-string lookup would silently ingest nothing.
+        ad = os.path.join(d, "parsdx"); os.makedirs(ad, exist_ok=True)
+        open(os.path.join(ad, "asrep_roast.txt"), "w").write(
+            "$krb5asrep$23$noauthpre@CORP.LOCAL:aabbccdd$feedface00\n")
+        jpot = os.path.join(d, "john.pot")
+        open(jpot, "w").write("$krb5asrep$23$aabbccdd$feedface00:Autumn2026!\n")   # john's spelling
+        jc = ingest_cracked(d, jpot)
+        check("john potfile header variant still maps to the account",
+              any(f["asset"] == "CORP.LOCAL\\noauthpre" for f in jc))
+        open(jpot, "w").write("$krb5asrep$23$aabbccdd$deadbeef99:Nope!\n")         # not ours
+        check("unknown cracked hash is still skipped", ingest_cracked(d, jpot) == [])
+
+    total = 10
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
@@ -195,7 +221,10 @@ def main(argv=None) -> int:
         print(f"\n[{kind}] {c['count']} hash(es) -> {c['file']}")
         print(f"  {c['hashcat']}")
         print(f"  (then: {c['hashcat_show']}  -> save to show.txt)")
+        print(f"  CPU-only box (hashcat has no backend)?  {c['john']}")
+    pot = next(iter(cmds.values())).get("john_pot", "")
     print("\n# Feed results back in:  python3 crack.py <run_dir> --results show.txt")
+    print(f"#   ...or, if you used john:  python3 crack.py <run_dir> --results {pot}")
     return 0
 
 

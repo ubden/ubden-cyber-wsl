@@ -46,6 +46,29 @@ def infer_reached_da(run_dir: str) -> bool:
     return (":::" in body) or ("krbtgt:" in body.lower())
 
 
+_PROBLEM_STATUSES = {"error", "timeout", "missing_tool", "out_of_scope_skip", "blocked_denylist",
+                     "aborted_stop_file", "LOCKOUT_ABORT", "AUTH_FAIL_ABORT"}
+
+
+def step_stats(run_dir: str) -> dict:
+    """Summarise the executed-step log. Without this, a tool that errored out makes the run print
+    '0 findings', which reads as 'the target is clean' — the most dangerous false conclusion here."""
+    p = os.path.join(run_dir, "parsdx", "parsdx_steps.json")
+    try:
+        evs = json.load(open(p, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"total": 0, "counts": {}, "problems": []}
+    counts, problems = {}, []
+    for e in evs:
+        if not isinstance(e, dict):
+            continue
+        st = str(e.get("status", "?"))
+        counts[st] = counts.get(st, 0) + 1
+        if st in _PROBLEM_STATUSES:
+            problems.append(f"{e.get('step', '?')}: {st}")
+    return {"total": len(evs), "counts": counts, "problems": problems}
+
+
 def run(run_dir, creds, *, nets=None, hosts_allow=None, skip_attack=False, dry_run=False,
         enable_writes=False, allow_dcsync=False, assume_yes=False, no_report=False,
         reached_da=None, lang="tr") -> dict:
@@ -91,8 +114,17 @@ def run(run_dir, creds, *, nets=None, hosts_allow=None, skip_attack=False, dry_r
     if not dry_run and not no_report:
         report_rc = emit.regenerate_report(run_dir)
 
+    stats = step_stats(run_dir)
+    if stats["problems"]:
+        # Drain stdout first: when the run is piped/teed, stdout is block-buffered and stderr is not,
+        # so the warning otherwise prints ABOVE the step log it is talking about.
+        sys.stdout.flush()
+        print(f"!! {len(stats['problems'])} step(s) did NOT complete cleanly — "
+              f"'{len(findings)} findings' is NOT proof the target is clean:", file=sys.stderr)
+        for p in stats["problems"]:
+            print(f"   - {p}", file=sys.stderr)
     summary = {
-        "findings": len(findings), "emit": emit_res, "chain": cs,
+        "findings": len(findings), "steps": stats, "emit": emit_res, "chain": cs,
         "artifacts": {"attack_layer": os.path.relpath(layer_path, run_dir),
                       "kill_chain": os.path.relpath(narr_path, run_dir),
                       "coverage_json": os.path.relpath(cov_json, run_dir),
@@ -118,8 +150,17 @@ def _write_summary_md(run_dir, summary, cs):
              f"- Zincir sonucu: **{cs['chain_severity']} (CVSS {cs['chain_score']})** — "
              f"{'Domain Admin FİİLEN elde edildi' if cs['reached_da'] else 'DA fiilen çalıştırılmadı (yol tespit edildiyse raporda belirtildi)'}, "
              f"{cs['links']} aşama",
-             f"- Gerekçe: {cs['rationale']}", "",
-             "## Üretilen dosyalar (parsdx/)",
+             f"- Gerekçe: {cs['rationale']}", ""]
+    st = summary.get("steps") or {}
+    if st.get("total"):
+        lines += [f"## Adım durumu ({st['total']} adım)",
+                  "- " + ", ".join(f"{k}: {v}" for k, v in sorted(st.get("counts", {}).items()))]
+        if st.get("problems"):
+            lines += ["", "> ⚠️ **Aşağıdaki adımlar temiz tamamlanmadı — bu yüzden bulgu sayısı "
+                      "'hedef temiz' anlamına GELMEZ.** Bu adımlar tekrar çalıştırılmalı:"]
+            lines += [f">   - `{p}`" for p in st["problems"]]
+        lines.append("")
+    lines += ["## Üretilen dosyalar (parsdx/)",
              f"- Saldırı zinciri anlatısı: `{summary['artifacts']['kill_chain']}`",
              f"- ATT&CK Navigator katmanı: `{summary['artifacts']['attack_layer']}`",
              f"- Kapsam matrisi: `{summary['artifacts']['coverage_md']}`", "",
@@ -181,6 +222,19 @@ def _self_test() -> int:
         check("cracked.json folds in + scored (real check)",
               s2["findings"] == 4 and len(crk) == 1 and crk[0]["cvss"].startswith("CVSS:3.1"))
 
+        # step statuses must surface: a tool that errored makes "0 findings" a FALSE 'clean' signal
+        json.dump([{"step": "kerberoast", "status": "ok"},
+                   {"step": "bloodhound_dconly", "status": "error"},
+                   {"step": "coerce_scan", "status": "timeout"}],
+                  open(os.path.join(pdir, "parsdx_steps.json"), "w"))
+        stt = step_stats(d)
+        check("step_stats flags problem steps",
+              stt["total"] == 3 and len(stt["problems"]) == 2
+              and any("bloodhound" in p for p in stt["problems"]))
+        run(d, {"user": "svc", "password": "P"}, skip_attack=True, no_report=True)
+        check("SUMMARY warns that findings != clean when a step failed",
+              "temiz tamamlanmadı" in open(os.path.join(pdir, "SUMMARY.md"), encoding="utf-8").read())
+
         # now simulate an executed DCSync -> DA truly reached
         open(os.path.join(pdir, "dcsync_dump.txt"), "w").write("krbtgt:502:aad3b...:31d6...")
         check("claims DA only after executed DCSync", infer_reached_da(d) is True)
@@ -189,7 +243,7 @@ def _self_test() -> int:
         mode = oct(os.stat(os.path.join(pdir, "SUMMARY.json")).st_mode)[-3:]
         check("SUMMARY.json is 0600", mode == "600")
 
-    total = 10
+    total = 12
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 

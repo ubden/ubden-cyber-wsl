@@ -56,6 +56,28 @@ def check_pylibs() -> list[tuple]:
     return res
 
 
+def check_crack_backend() -> tuple:
+    """hashcat needs an OpenCL/CUDA backend. On a CPU-only box (most client laptops and every VPS we
+    have) it exits with 'No OpenCL, HIP or CUDA compatible platform found' and cracks NOTHING — the
+    step looks like it ran. Measured 2026-09-27: installing pocl-opencl-icd alone is not enough,
+    the ICD loader ocl-icd-libopencl1 must be there too. john works on CPU regardless, so a missing
+    backend is a WARN that redirects, not a blocker."""
+    hc = attack.tool_path("hashcat")
+    if not hc:
+        return ("crack backend", WARN, "hashcat not installed — use the john commands crack.py prints")
+    try:
+        r = subprocess.run([hc, "-I"], capture_output=True, text=True, timeout=60)
+        out = (r.stdout or "") + (r.stderr or "")
+    except Exception as exc:  # noqa: BLE001
+        return ("crack backend", WARN, f"could not query hashcat ({type(exc).__name__}) — verify by hand")
+    if "No OpenCL" in out or "compatible platform found" in out:
+        return ("crack backend", WARN,
+                "hashcat has NO usable backend (CPU-only box) — it will crack nothing. Fix: "
+                "apt install pocl-opencl-icd ocl-icd-libopencl1. Otherwise use crack.py's john commands")
+    dev = re.search(r"Name\.+:\s*(.+)", out)
+    return ("crack backend", OK, f"hashcat backend present ({dev.group(1).strip() if dev else 'device found'})")
+
+
 def check_report_engine() -> list[tuple]:
     installed = "/opt/ubden-cyber/report_v2.py"
     installed_py = "/opt/ubden-cyber/.venv/bin/python"
@@ -193,6 +215,7 @@ def run_checks(*, scope=None, dc=None, domain=None, ip=None, user=None, password
     results = []
     results += check_tools()
     results += check_pylibs()
+    results.append(check_crack_backend())
     results.append(check_report_engine()[0])
     results.append(check_scope(scope))
     results.append(check_creds(password, hashes))
@@ -294,11 +317,30 @@ def _self_test() -> int:
         check("net probes skipped without scope",
               any(n == "network checks" and st == WARN for n, st, _ in rr2))
 
+    # crack backend: a present hashcat with no OpenCL device cracks nothing but exits 0
+    with tempfile.TemporaryDirectory() as hd:
+        fake = os.path.join(hd, "hashcat")
+        open(fake, "w").write('#!/bin/sh\necho "ATTENTION! No OpenCL, HIP or CUDA compatible '
+                              'platform found." >&2\nexit 0\n')
+        os.chmod(fake, 0o755)
+        real = attack.tool_path
+        attack.tool_path = lambda k: fake if k == "hashcat" else real(k)  # noqa: E731
+        try:
+            n, st, d = check_crack_backend()
+            check("no OpenCL backend -> WARN, not OK", st == WARN and "pocl-opencl-icd" in d)
+            open(fake, "w").write('#!/bin/sh\necho "  Name...........: cpu-x86 PoCL"\nexit 0\n')
+            os.chmod(fake, 0o755)
+            check("backend present -> OK", check_crack_backend()[1] == OK)
+            attack.tool_path = lambda k: None if k == "hashcat" else real(k)  # noqa: E731
+            check("hashcat absent -> WARN pointing at john", "john" in check_crack_backend()[2])
+        finally:
+            attack.tool_path = real
+
     # end-to-end (net off) never crashes and returns a verdict
     res = run_checks(scope=None, domain="corp.local", ip="10.0.0.10", password="pw", net=False)
     check("run_checks returns a NO-GO verdict when scope missing", verdict(res)[0] is False)
 
-    total = 23
+    total = 26
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 

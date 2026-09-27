@@ -89,6 +89,21 @@ hashcat -m <MOD> "<RUN>/parsdx/hashes/<dosya>.hash" --show > show.txt
 parsdx-ext/.venv/bin/python3 parsdx-ext/crack.py "<RUN>" --results show.txt  # kırılanları bulguya çevir
 parsdx-ext/.venv/bin/python3 parsdx-ext/pipeline.py --run-dir "<RUN>" --skip-attack --no-report   # rapora işle
 ```
+
+> ⚠️ **hashcat GPU'suz makinede HİÇBİR ŞEY kırmaz.** `No OpenCL, HIP or CUDA compatible platform
+> found` yazıp **0 ile çıkar** — adım çalışmış gibi görünür. `doctor.py` artık bunu `crack backend`
+> kontrolüyle yakalıyor. Çözüm ikisinden biri:
+> - `apt install pocl-opencl-icd ocl-icd-libopencl1` (ikisi birden; sadece ICD yetmiyor), sonra
+>   `hashcat -I` bir CPU cihazı göstermeli;
+> - ya da `crack.py`'ın bastığı **john** komutunu kullan — CPU'da çalışır, kurulu gelir.
+>
+> john kullanırsan sonucu `--show` ile değil **potfile** ile geri besle: `john --show` krb5tgs için
+> hesabı `?` diye basıyor. `crack.py`'ın verdiği komutta `--pot=<RUN>/parsdx/hashes/john.pot` zaten var:
+> ```
+> parsdx-ext/.venv/bin/python3 parsdx-ext/crack.py "<RUN>" --results "<RUN>/parsdx/hashes/john.pot"
+> ```
+> (john AS-REP hash başlığını yeniden yazıyor; `ingest_cracked` bunu şifre metninden eşleştiriyor.)
+
 Tamamen çevrimdışı (ağa dokunmaz). "Roastable" → "şifresi kırıldı = gerçek kimlik" bulgusuna döner.
 
 **g) (Yalnız gerekliyse, Claude onaylarsa) yazma/dump adımları:**

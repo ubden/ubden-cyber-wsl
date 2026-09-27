@@ -150,6 +150,18 @@ def _load_json(path):
         return None
 
 
+def _target_list(v) -> list[str]:
+    """UBDEN writes engagement.json's `targets` as a COMMA-SEPARATED STRING ("host.example.tr,1.2.3.4"),
+    not a list — measured against a real UBDEN run folder 2026-09-27. Iterating a string yields single
+    CHARACTERS, so every per-host step (auth_matrix, share_triage) silently vanished and the run
+    printed 'scope: 0 in' as if the engagement had no hosts."""
+    if isinstance(v, str):
+        return [t for t in re.split(r"[,;\s]+", v) if t]
+    if isinstance(v, (list, tuple)):
+        return [t for t in v if isinstance(t, str)]
+    return []
+
+
 def load_context(run_dir: str) -> Context:
     ctx = Context(); ctx.run_dir = run_dir
     eng = _load_json(os.path.join(run_dir, "engagement.json")) or {}
@@ -163,7 +175,7 @@ def load_context(run_dir: str) -> Context:
     inv = _load_json(os.path.join(run_dir, "DEVICE_INVENTORY.json")) or {}
     hosts = [d.get("ip") for d in (inv.get("devices") or []) if isinstance(d, dict) and d.get("ip")]
     if not hosts:
-        hosts = [t for t in (eng.get("frozen_dns") or eng.get("targets") or []) if isinstance(t, str)]
+        hosts = _target_list(eng.get("frozen_dns")) or _target_list(eng.get("targets"))
     ctx.hosts = sorted({h for h in hosts if valid_target(h)})  # reject junk/option-like entries
     return ctx
 
@@ -490,6 +502,18 @@ def _self_test() -> int:
         ctx = load_context(d)
         check("junk host '-M' dropped from context", ctx.hosts == ["10.0.0.10", "10.0.0.20"])
 
+    # real UBDEN engagement.json: no DEVICE_INVENTORY.json at all, and `targets` is a COMMA STRING.
+    # NOTE: a fresh `as d` here would rebind the enclosing block's temp dir (Python has no block
+    # scope) and send the STOP-file test below into the wrong directory — hence `tdir`.
+    with tempfile.TemporaryDirectory() as tdir:
+        json.dump({"targets": "web01.example.tr,10.0.0.10"},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        check("comma-separated targets string -> host list, not characters",
+              load_context(tdir).hosts == ["10.0.0.10", "web01.example.tr"])
+        json.dump({"targets": ["10.0.0.20", 7, "-M"]},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        check("list form still works and still drops junk", load_context(tdir).hosts == ["10.0.0.20"])
+
         # build_plan: empty cred refused
         refused = False
         try:
@@ -566,7 +590,7 @@ def _self_test() -> int:
                              nets=[ipaddress.ip_network("10.0.0.0/24")], skip_preflight=True)
         check("STOP file aborts the run", any(e["status"] == "aborted_stop_file" for e in res2["events"]))
 
-    total = 30
+    total = 32
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
