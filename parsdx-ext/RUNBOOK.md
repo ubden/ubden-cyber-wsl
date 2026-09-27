@@ -40,9 +40,11 @@ source ~/.bashrc     # pipx PATH icin
 **b) SCOPE dosyasını yaz (ZORUNLU — bu olmadan hiçbir paket gitmez, fail-closed):**
 ```bash
 # scope.md'deki sözleşme hedeflerini bir satıra bir yaz (IP / CIDR / hostname):
-printf '10.0.0.0/24\n<DC_IP>\n<DOMAIN>\n' > scope.txt
+printf '10.0.0.0/24\n<DC_IP>\n<DC_FQDN>\n' > scope.txt
 ```
 Sadece bu dosyadaki hedeflere dokunulur; DEVICE_INVENTORY'de olsa bile kapsam dışı host atlanır.
+⚠️ **Buraya DOMAIN adı yazmak yetmez** — `corp.local` satırı `dc01.corp.local`'i kapsamaz. Sözleşmedeki
+her hostname ayrı satıra birebir yazılır; eksiğini `--dry-run`'daki `N in / M dropped` satırı gösterir.
 
 **c) HAZIRLIK KONTROLÜ — canlıdan önce GO/NO-GO (yarım yolda eksik çıkmasın):**
 ```bash
