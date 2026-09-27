@@ -139,6 +139,7 @@ class Context:
     def __init__(self):
         self.domain = self.dc = self.dc_ip = self.run_dir = None
         self.hosts = []
+        self.target_networks = []   # CIDRs named in engagement.json, never expanded
 
 
 def _load_json(path):
@@ -172,10 +173,26 @@ def load_context(run_dir: str) -> Context:
     adr = _load_json(os.path.join(run_dir, "AD_ASSESSMENT.json")) or {}
     ctx.domain = ctx.domain or adr.get("domain")
     ctx.dc = ctx.dc or adr.get("dc")
+    # UBDEN v5 writes DEVICE_INVENTORY.json as {"schema":1, ..., "devices":[{"ip": ...}]} -- the
+    # shape read here. Verified against the v5.0.0 source 2026-09-27 (device_inventory.py).
     inv = _load_json(os.path.join(run_dir, "DEVICE_INVENTORY.json")) or {}
     hosts = [d.get("ip") for d in (inv.get("devices") or []) if isinstance(d, dict) and d.get("ip")]
     if not hosts:
-        hosts = _target_list(eng.get("frozen_dns")) or _target_list(eng.get("targets"))
+        # Fallback: the scope the operator typed into the wizard. UBDEN's own wizard keeps
+        # "numeric IP/CIDR and named targets in separate, validated prompts" (wizard.py), so this
+        # list mixes single hosts with NETWORKS -- and Can's real 2026-09-23 run folder carried no
+        # DEVICE_INVENTORY.json at all, so this path does get taken.
+        raw = _target_list(eng.get("frozen_dns")) or _target_list(eng.get("targets"))
+        for t in raw:
+            try:
+                net = ipaddress.ip_network(t, strict=False)
+            except ValueError:
+                hosts.append(t)
+                continue
+            if net.num_addresses > 1:
+                ctx.target_networks.append(str(net))   # a network is scope, not a host to hit
+            else:
+                hosts.append(str(net.network_address))
     ctx.hosts = sorted({h for h in hosts if valid_target(h)})  # reject junk/option-like entries
     return ctx
 
@@ -465,6 +482,19 @@ def run_offensive(ctx, *, user, password=None, hashes=None, nets=None, hosts_all
     plan = build_plan(ctx, in_hosts, user, password, hashes, enable_writes, allow_dcsync)
     out_dir = out_dir or os.path.join(ctx.run_dir, "parsdx")
     print(f"# scope: {len(in_hosts)} in / {len(dropped)} dropped out-of-scope; DC={dc_target}")
+    # A NETWORK in engagement.json is scope, not a host list. We deliberately do not expand it --
+    # per-host auth steps against 254 addresses under a 3-attempt lockout budget is exactly the
+    # kind of traffic that gets an engagement stopped. But "no hosts" must never be silent: say
+    # what we have and what is missing, or the run reads as "the target is clean".
+    if getattr(ctx, "target_networks", None):
+        print(f"# note: engagement.json names {len(ctx.target_networks)} network(s) "
+              f"({', '.join(ctx.target_networks[:4])}) and NO per-address inventory was expanded "
+              f"from them.", file=sys.stderr)
+        if not in_hosts:
+            print("!! no individual hosts to test. DEVICE_INVENTORY.json is missing or empty, so "
+                  "only networks were available. Run UBDEN's discovery step first, or list the "
+                  "hosts explicitly -- the per-host steps (auth matrix, share triage) will NOT run "
+                  "and a '0 findings' result here means NOTHING.", file=sys.stderr)
     events = run_plan(plan, out_dir, dry_run, ctx, nets, hosts_allow, secrets=[password, hashes])
     return {"events": events, "in_scope_hosts": in_hosts, "dropped_hosts": dropped}
 
@@ -518,6 +548,15 @@ def _self_test() -> int:
         json.dump({"targets": ["10.0.0.20", 7, "-M"]},
                   open(os.path.join(tdir, "engagement.json"), "w"))
         check("list form still works and still drops junk", load_context(tdir).hosts == ["10.0.0.20"])
+        # UBDEN v5's wizard keeps IP/CIDR and named targets in separate prompts, so `targets` can
+        # carry NETWORKS. A network is scope, not a host to hit: keep it, never expand it, and
+        # never let it silently become "no hosts".
+        json.dump({"targets": ["192.0.2.0/24", "10.0.0.10", "dc01.corp.local", "10.0.0.20/32"]},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        c = load_context(tdir)
+        check("CIDR target is kept as a network, not dropped", c.target_networks == ["192.0.2.0/24"])
+        check("single-address CIDR collapses to a host",
+              c.hosts == ["10.0.0.10", "10.0.0.20", "dc01.corp.local"])
 
         # build_plan: empty cred refused
         refused = False
@@ -600,7 +639,7 @@ def _self_test() -> int:
                              nets=[ipaddress.ip_network("10.0.0.0/24")], skip_preflight=True)
         check("STOP file aborts the run", any(e["status"] == "aborted_stop_file" for e in res2["events"]))
 
-    total = 34
+    total = 36
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
