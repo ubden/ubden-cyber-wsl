@@ -18,8 +18,14 @@ Her komut çıktısını Claude'a yapıştır → o yorumlar + sıradakini söyl
 ## 2. UBDEN kurulumu ve taraması (Can abinin işi)
 PowerShell (yönetici):
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v4.8.3-wsl.1/bootstrap.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.11/bootstrap.ps1' | iex
 ```
+⚠️ **Sürümü çalıştırmadan önce Can'a teyit ettir.** UBDEN hızlı sürüm çıkarıyor: 2026-09-27'de tek
+günde 11 `wsl` sürümü yayınlandı. Yukarıdaki etiket o günün sonundaki `v5.0.0-wsl.11`. Güncel liste:
+`git ls-remote --tags https://github.com/ubden/ubden-cyber-wsl | tail`.
+Bizim tarafı ilgilendiren şema (`engagement.json`, `DEVICE_INVENTORY.json`) v5.0.0-wsl.7 → wsl.11
+arasında **değişmedi** (doğrulandı 2026-09-27); değişirse `attack.py::load_context` güncellenmeli.
+
 - [ ] Sihirbazda kapsamı gir (müşteri: <CLIENT>, hedefler, hariçler, DC, test hesabı).
 - [ ] Profil: **network** (+ AD modülü) — iç ağ işi bu. `YETKILIYIM` yaz.
 - [ ] Tarama bitsin. Rapor klasörü: `~/Desktop/UBDEN-Cyber-Reports/<CLIENT>_<tarih>_<id>/`
