@@ -173,6 +173,34 @@ def load_context(run_dir: str) -> Context:
     adr = _load_json(os.path.join(run_dir, "AD_ASSESSMENT.json")) or {}
     ctx.domain = ctx.domain or adr.get("domain")
     ctx.dc = ctx.dc or adr.get("dc")
+    # UBDEN's `ad` block carries no address: collect_ad writes only mode/domain/dc/account
+    # (wizard.py), so dc_ip and pinned_ip are fields we invented and they are never present --
+    # measured against a real v5.0.0 run folder 2026-09-28. The address IS in the run folder,
+    # under frozen_dns, where the wizard pinned the DC's name before any traffic was sent.
+    # Prefer that over the name: every Kerberos step then targets a fixed address instead of
+    # depending on the operator's resolver, and pinning is also what keeps us inside scope if
+    # the name later resolves somewhere else.
+    if not ctx.dc_ip and ctx.dc:
+        frozen = eng.get("frozen_dns")
+        if isinstance(frozen, dict):
+            for name, addrs in frozen.items():
+                if str(name).lower() != str(ctx.dc).lower():
+                    continue
+                for addr in (addrs if isinstance(addrs, (list, tuple)) else [addrs]):
+                    try:
+                        if ipaddress.ip_address(str(addr)).version == 4:
+                            ctx.dc_ip = str(addr)
+                            break
+                    except ValueError:
+                        continue
+                break
+    # A DC given as a bare IP is its own address.
+    if not ctx.dc_ip and ctx.dc:
+        try:
+            ipaddress.ip_address(ctx.dc)
+            ctx.dc_ip = ctx.dc
+        except ValueError:
+            pass
     # UBDEN v5 writes DEVICE_INVENTORY.json as {"schema":1, ..., "devices":[{"ip": ...}]} -- the
     # shape read here. Verified against the v5.0.0 source 2026-09-27 (device_inventory.py).
     inv = _load_json(os.path.join(run_dir, "DEVICE_INVENTORY.json")) or {}
@@ -558,6 +586,35 @@ def _self_test() -> int:
         check("single-address CIDR collapses to a host",
               c.hosts == ["10.0.0.10", "10.0.0.20", "dc01.corp.local"])
 
+        # dc_ip: UBDEN's `ad` block has no address (measured on a real v5.0.0 run 2026-09-28).
+        # The wizard pins it in frozen_dns before any traffic; read it there.
+        json.dump({"targets": ["dc01.corp.local"],
+                   "frozen_dns": {"dc01.corp.local": ["10.0.0.10"]},
+                   "ad": {"mode": "supplied", "domain": "corp.local",
+                          "dc": "dc01.corp.local", "account": "svc"}},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        c = load_context(tdir)
+        check("dc_ip recovered from frozen_dns when the ad block has none", c.dc_ip == "10.0.0.10")
+        check("dc name still read alongside the recovered address", c.dc == "dc01.corp.local")
+
+        json.dump({"targets": ["10.0.0.10"],
+                   "ad": {"mode": "supplied", "domain": "corp.local", "dc": "10.0.0.10"}},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        check("a DC given as a bare IP is its own address", load_context(tdir).dc_ip == "10.0.0.10")
+
+        json.dump({"targets": ["dc01.corp.local"],
+                   "frozen_dns": {"other.corp.local": ["10.0.0.99"]},
+                   "ad": {"mode": "supplied", "domain": "corp.local", "dc": "dc01.corp.local"}},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        check("never borrows another host's pinned address", load_context(tdir).dc_ip is None)
+
+        json.dump({"targets": ["dc01.corp.local"],
+                   "frozen_dns": {"dc01.corp.local": ["fe80::1", "10.0.0.11"]},
+                   "ad": {"mode": "supplied", "domain": "corp.local", "dc": "dc01.corp.local"}},
+                  open(os.path.join(tdir, "engagement.json"), "w"))
+        check("picks the IPv4 address, not a link-local v6",
+              load_context(tdir).dc_ip == "10.0.0.11")
+
         # build_plan: empty cred refused
         refused = False
         try:
@@ -639,7 +696,8 @@ def _self_test() -> int:
                              nets=[ipaddress.ip_network("10.0.0.0/24")], skip_preflight=True)
         check("STOP file aborts the run", any(e["status"] == "aborted_stop_file" for e in res2["events"]))
 
-    total = 36
+    total = 41   # 36 original + 5 for the frozen_dns dc_ip recovery. Hardcoded on
+                 # purpose: it catches a check block that silently never ran.
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
