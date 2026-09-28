@@ -27,6 +27,34 @@ STAGE_ORDER = {"unauth_smb": 0, "gpp_password": 1, "asrep_roast": 1, "kerberoast
                "coercion": 4, "adcs_esc": 4, "dcsync": 5}
 
 
+def dedupe_findings(findings):
+    """Collapse findings that state the SAME fact about the SAME asset.
+
+    A host reached by both its IP and its FQDN comes back twice: nxc resolves the name, so
+    `type` and `asset` are identical and only the evidence filename differs. Left alone that
+    reads as two separate compromises -- the kill chain prints the stage twice, chain_severity
+    counts an extra link, and the findings total disagrees with what emit() actually wrote
+    (emit dedupes on title, so 7 findings became 6 in review.json).
+
+    Keeps the first occurrence and records every other evidence path on it, so nothing is
+    silently dropped. Findings with no type are never merged -- an empty key is not a match.
+    """
+    out, seen = [], {}
+    for f in findings:
+        key = (f.get("type") or "", f.get("asset") or "")
+        if not key[0] or key not in seen:
+            seen[key] = f
+            out.append(f)
+            continue
+        first = seen[key]
+        ev = f.get("evidence")
+        if ev and ev != first.get("evidence"):
+            first.setdefault("evidence_also", [])
+            if ev not in first["evidence_also"]:
+                first["evidence_also"].append(ev)
+    return out
+
+
 def order_chain(findings):
     return sorted(findings, key=lambda f: STAGE_ORDER.get(f.get("type", ""), 9))
 
@@ -97,6 +125,7 @@ def run(run_dir, creds, *, nets=None, hosts_allow=None, skip_attack=False, dry_r
                 findings.append(cf)
         except (OSError, ValueError):
             pass
+    findings = dedupe_findings(findings)
     for f in findings:
         score.score_finding(f)
     attck.tag_findings(findings)
@@ -185,6 +214,23 @@ def _self_test() -> int:
         if cond:
             ok += 1
 
+    # dedupe_findings: the IP/FQDN double-report measured against the live lab DC 2026-09-28
+    dup = [{"type": "local_admin", "asset": "10.0.0.10", "evidence": "parsdx/auth_matrix_10.0.0.10.txt"},
+           {"type": "local_admin", "asset": "10.0.0.10", "evidence": "parsdx/auth_matrix_dc01.txt"},
+           {"type": "local_admin", "asset": "10.0.0.11", "evidence": "parsdx/auth_matrix_10.0.0.11.txt"},
+           {"type": "kerberoast", "asset": "10.0.0.10", "evidence": "parsdx/kerberoast.txt"},
+           {"type": "", "asset": "x", "evidence": "a"}, {"type": "", "asset": "x", "evidence": "b"}]
+    ded = dedupe_findings([dict(f) for f in dup])
+    check("dedupe collapses same type+asset", len(ded) == 5)
+    check("dedupe keeps a different host", any(f["asset"] == "10.0.0.11" for f in ded))
+    check("dedupe keeps a different type on the same asset",
+          sum(f["type"] == "kerberoast" for f in ded) == 1)
+    check("dedupe keeps the first evidence",
+          ded[0]["evidence"] == "parsdx/auth_matrix_10.0.0.10.txt")
+    check("dedupe records the dropped evidence",
+          ded[0].get("evidence_also") == ["parsdx/auth_matrix_dc01.txt"])
+    check("dedupe never merges an empty type", sum(f["type"] == "" for f in ded) == 2)
+
     with tempfile.TemporaryDirectory() as d:
         json.dump({"ad": {"domain": "corp.local", "dc": "dc01.corp.local", "dc_ip": "10.0.0.10"}},
                   open(os.path.join(d, "engagement.json"), "w"))
@@ -243,7 +289,8 @@ def _self_test() -> int:
         mode = oct(os.stat(os.path.join(pdir, "SUMMARY.json")).st_mode)[-3:]
         check("SUMMARY.json is 0600", mode == "600")
 
-    total = 12
+    total = 18   # 12 original + 6 for dedupe_findings. Hardcoded on purpose: it catches a
+                 # check block that silently never ran, which an auto-count would hide.
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
