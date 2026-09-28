@@ -78,15 +78,52 @@ def check_crack_backend() -> tuple:
     return ("crack backend", OK, f"hashcat backend present ({dev.group(1).strip() if dev else 'device found'})")
 
 
+def _can_import_reportlab_here() -> bool:
+    try:
+        import reportlab  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _imports_reportlab(py: str) -> bool:
+    """Can THIS interpreter import reportlab? Measured, not assumed.
+
+    report_v2.py dies on `from reportlab.lib import colors` and nothing else here can tell.
+    Probing the exact interpreter emit.regenerate_report will invoke is the only honest answer:
+    a path check said 'may be missing' while reportlab was installed and the report rendered
+    fine (measured 2026-09-28), which is a warning that cries wolf on every single run.
+    """
+    if os.path.abspath(py) == os.path.abspath(sys.executable):
+        try:
+            import reportlab  # noqa: F401
+            return True
+        except ImportError:
+            return False
+    try:
+        return subprocess.run([py, "-c", "import reportlab"], capture_output=True,
+                              timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def check_report_engine() -> list[tuple]:
     installed = "/opt/ubden-cyber/report_v2.py"
     installed_py = "/opt/ubden-cyber/.venv/bin/python"
     parent = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "report_v2.py")
-    if os.path.exists(installed) and os.path.exists(installed_py):
-        return [("report engine", OK, "UBDEN report_v2 + venv found at /opt/ubden-cyber")]
+    # Mirror emit.regenerate_report's own preference order, and probe the interpreter it would use.
+    if os.path.exists(installed):
+        py = installed_py if os.path.exists(installed_py) else sys.executable
+        if _imports_reportlab(py):
+            return [("report engine", OK, f"UBDEN report_v2 at /opt/ubden-cyber, reportlab OK ({py})")]
+        return [("report engine", WARN, f"report_v2 at /opt/ubden-cyber but {py} cannot import "
+                 "reportlab -> report regen WILL fail; findings still land in review.json")]
     if os.path.exists(parent):
-        return [("report engine", WARN, "found report_v2 next to parsdx-ext but not the /opt venv "
-                 "(reportlab may be missing → report regen could fail; findings still land in review.json)")]
+        if _imports_reportlab(sys.executable):
+            return [("report engine", OK, "report_v2 next to parsdx-ext, reportlab OK in this venv")]
+        return [("report engine", WARN, "found report_v2 next to parsdx-ext but this interpreter "
+                 "cannot import reportlab -> report regen WILL fail; fix with "
+                 "`.venv/bin/pip install reportlab`; findings still land in review.json")]
     return [("report engine", WARN, "report_v2.py not found — findings still written to review.json, "
              "render the report manually later")]
 
@@ -336,11 +373,24 @@ def _self_test() -> int:
         finally:
             attack.tool_path = real
 
+    # report engine: the reportlab answer is measured, not guessed
+    check("_imports_reportlab agrees with this interpreter",
+          _imports_reportlab(sys.executable) == _can_import_reportlab_here())
+    check("_imports_reportlab says no for a bogus interpreter",
+          _imports_reportlab("/nonexistent/python") is False)
+    _r = check_report_engine()[0]
+    check("report engine verdict matches the measurement",
+          (_r[1] == OK) == (_imports_reportlab(sys.executable) and
+                            (os.path.exists("/opt/ubden-cyber/report_v2.py") or
+                             os.path.exists(os.path.join(os.path.dirname(os.path.dirname(
+                                 os.path.abspath(__file__))), "report_v2.py")))))
+
     # end-to-end (net off) never crashes and returns a verdict
     res = run_checks(scope=None, domain="corp.local", ip="10.0.0.10", password="pw", net=False)
     check("run_checks returns a NO-GO verdict when scope missing", verdict(res)[0] is False)
 
-    total = 26
+    total = 29   # 26 original + 3 for the measured report-engine check. Hardcoded on purpose:
+                 # it catches a check block that silently never ran.
     print(f"\n{ok}/{total} checks passed")
     return 0 if ok == total else 1
 
