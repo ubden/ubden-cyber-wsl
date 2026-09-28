@@ -1,11 +1,61 @@
 # PARSDX — Tek Sayfa Komut Kağıdı
 
 Tam anlatım `RUNBOOK.md`'de. Bu sayfa sadece **sırayla yapıştırılacak komutlar**.
-Her komutun çıktısını Claude'a yapıştır. **Tek bir yeri doldur (§0), gerisi düzeltmesiz yapışır.**
+Her komutun çıktısını Claude'a yapıştır. **Tek bir yeri doldur (§0B), gerisi düzeltmesiz yapışır.**
 
 ---
 
-## 0 — Değişkenler (Kali WSL'de, BİR kez; aynı terminalde kal)
+## 0A — AnyDesk'e bağlanınca: ilk 5 dakika (müşteri makinesinde, Windows cmd)
+
+Amaç: §0B'deki `DOM` / `DC` / `IP` değerlerini **müşteriden istemeden makineden çıkarmak**, ve
+kimlik denemesi yapmadan **kilitlenme eşiğini** öğrenmek. Hepsi salt okunur, hiçbiri parola denemez,
+hiçbiri yönetici yetkisi istemez — oturum açmış kullanıcının hakkıyla çalışır.
+
+```cmd
+echo %USERDNSDOMAIN%
+echo %USERDOMAIN%
+whoami /upn
+whoami /groups
+nltest /dsgetdc:%USERDNSDOMAIN%
+nltest /dclist:%USERDNSDOMAIN%
+ipconfig /all
+net accounts /domain
+```
+
+Hangi çıktı neyi doldurur:
+
+| çıktı | ne verir |
+|---|---|
+| `echo %USERDNSDOMAIN%` | **`DOM`** — AD alan adı |
+| `nltest /dsgetdc:` | **`DC`** (FQDN) + **`IP`** — o an kullanılan DC |
+| `nltest /dclist:` | **tüm** DC'ler. Müşterinin verdiği envanterde iki DC'ye aynı IP yazılmış olabilir (sık rastlanan bir yazım hatası); gerçeği burada çıkar |
+| `ipconfig /all` | hangi VLAN'dayız + DNS sunucuları (genelde DC'lerin ta kendisi) |
+| `whoami /groups` | elimizdeki oturumun yetkisi — yönetici çıkarsa §5 zinciri düşük yetkiden başlamıyor demektir, raporda belirtilir |
+| `net accounts /domain` | parola politikası + **kilitlenme eşiği** |
+
+⚠️ **`net accounts /domain` çıktısındaki kilitlenme eşiğini §4'e girmeden oku.** Eşik 3 veya altıysa
+`guard.py`'nin bütçesini **1**'e indir. Gerçek kullanıcı hesabını kilitlemek sözleşme madde 5 kapsamında
+üretim kesintisidir; ortak kullanılan bir hesabı kilitlemek doğrudan iş durdurur.
+
+**Makine domain'e katılı değilse** alan adı yine alınır:
+
+```cmd
+nslookup -type=SRV _ldap._tcp.dc._msdcs.<alan-adi>
+```
+
+Kali tarafından, kimlik doğrulamasız (anonim RootDSE — alan adını ve naming context'i verir):
+
+```bash
+ldapsearch -x -H ldap://<DC_IP> -s base -b "" namingContexts defaultNamingContext
+```
+
+**Makineden ÇIKMAYAN tek şey parola.** Bunu müşterinin BT yetkilisinin (test sırasında bizimle olan kişi)
+yazması gerekir. **Yönetici olmasına gerek yok, olmaması tercih edilir** — zincirin amacı
+"sıradan bir kullanıcıdan nereye kadar gidiliyor" sorusunu cevaplamak. Parola yoksa tarama, port/sürüm,
+SMB imzalama ve paylaşım kontrolleri yine çalışır; **kerberoast / AS-REP / ADCS / BloodHound düşer** ve
+`pipeline.py` zaten kimlik olmadan plan kurmayı reddeder (`no credential — refusing to build a plan`).
+
+## 0B — Değişkenler (Kali WSL'de, BİR kez; aynı terminalde kal)
 
 ```bash
 export RUN='/root/Desktop/UBDEN-Cyber-Reports/<CLIENT>_<tarih>_<id>'   # Can'ın UBDEN run klasörü
