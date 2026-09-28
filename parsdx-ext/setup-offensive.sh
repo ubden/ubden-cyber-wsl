@@ -16,13 +16,16 @@ FAILED=()
 
 echo "[1/4] APT paketleri (repo araclari)"
 apt-get update
+# NOTE: responder is deliberately absent. attack.py names it in the DC-breaking tooling it
+# never invokes, so installing it bought nothing and its [MISSING] line read as a real gap
+# on every run. Do not add it back without a step that actually calls it.
 # NOTE: netexec is NOT on PyPI (`pipx install netexec` can never work) — Kali ships it as an apt
 # package, so it belongs here. ntpdate was renamed to ntpsec-ntpdate in modern Debian/Kali.
 # pocl-opencl-icd + ocl-icd-libopencl1: without BOTH, hashcat finds no backend on a CPU-only box
 # and silently cracks nothing ("No OpenCL ... platform found"). Measured 2026-09-27 — the ICD
 # alone is not enough, the loader has to be there too. john is the CPU fallback either way.
 for p in netexec ldap-utils smbclient hashcat john pocl-opencl-icd ocl-icd-libopencl1 nmap \
-         ntpsec-ntpdate responder krb5-user python3-pip pipx seclists dnsutils; do
+         ntpsec-ntpdate krb5-user python3-pip pipx seclists dnsutils; do
   apt-get install -y --no-install-recommends "$p" || FAILED+=("apt:$p")
 done
 
@@ -46,6 +49,13 @@ if [[ -f "$HERE/requirements.txt" ]]; then
   python3 -m venv "$HERE/.venv" \
     && "$HERE/.venv/bin/pip" install -q --disable-pip-version-check -r "$HERE/requirements.txt" \
     || FAILED+=("venv:requirements (optional — tools degrade gracefully)")
+  # This script runs under sudo, so the venv lands root-owned and every later
+  # `pip install` into it needs sudo too -- including reportlab, which report_v2 imports.
+  # Hand it back to the operator who invoked sudo.
+  if [[ -n "${SUDO_USER:-}" ]] && [[ -d "$HERE/.venv" ]]; then
+    chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$HERE/.venv" 2>/dev/null \
+      || FAILED+=("venv:chown (venv stays root-owned; later pip installs need sudo)")
+  fi
 fi
 
 echo "[4/4] Dogrulama"
@@ -56,7 +66,7 @@ declare -A CHECK=(
   [GetNPUsers]="impacket-GetNPUsers GetNPUsers.py"
   [secretsdump]="impacket-secretsdump secretsdump.py"
   [coercer]="coercer Coercer" [bloodyAD]="bloodyAD"
-  [responder]="responder Responder" [hashcat]="hashcat" [ldapsearch]="ldapsearch"
+  [hashcat]="hashcat" [ldapsearch]="ldapsearch"
 )
 missing=0
 for key in "${!CHECK[@]}"; do
