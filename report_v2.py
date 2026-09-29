@@ -493,6 +493,23 @@ def ad_story(root,st,width):
     stale=ad.get('stale_computers')
     if isinstance(stale,list) and stale:
         result.append(P(f"90+ gün oturum açmamış bilgisayarlar ({len(stale)}): "+', '.join(stale[:60]),st['SmallX'],limit=1500))
+    # ADCS (sertifika servisleri) ve SYSVOL/GPP.
+    adcs=ad.get('adcs')
+    if isinstance(adcs,dict) and adcs.get('cas'):
+        result.append(P('AD Sertifika Servisleri (ADCS)',st['SubX']))
+        result.append(P('Sertifika Yetkilisi (CA): '+', '.join(f"{c.get('name','?')} @ {c.get('host','?')}" for c in adcs['cas']),st['SmallX'],limit=1500))
+        escs=adcs.get('esc') or []
+        if escs:
+            for e in escs:
+                result.append(P(f"{e.get('esc')} · {e.get('template')}: {e.get('detail')}",st['SmallX'],limit=2000))
+        else:
+            result.append(P(f"{len(adcs.get('templates') or [])} şablon incelendi; düşük yetkili istismar adayı (ESC1-ESC4) bulunmadı. ESC6/ESC7/ESC8 Attack Mode (certipy) ile değerlendirilir.",st['SmallX']))
+    sv=ad.get('sysvol')
+    if isinstance(sv,dict) and sv.get('status')=='ok' and sv.get('cpassword_count'):
+        result.append(P(f"SYSVOL / Group Policy Preferences: {sv['cpassword_count']} adet cpassword bulundu ve kamuya açık anahtarla çözüldü (kritik).",st['SubX']))
+        for hit in (sv.get('findings') or [])[:20]:
+            if isinstance(hit,dict):
+                result.append(P(f"  {hit.get('file_type','?')} · kullanıcı: {hit.get('username','?')} · {hit.get('path','')}",st['SmallX'],limit=1200))
     if ad.get('forest') or ad.get('domain_mode'):
         result.append(P(f"Orman: {ad.get('forest','?')} · Orman modu: {ad.get('forest_mode','?')} · Alan modu: {ad.get('domain_mode','?')}",st['SmallX']))
     if ad.get('dc_dns_records'):
@@ -873,6 +890,25 @@ def read_data(root):
                     'description':'DC, 389/TCP üzerinde TLS olmadan SIMPLE LDAP bağlanmayı kabul etti; test hesabı kimlik bilgisi düz metin olarak doğrulandı.',
                     'impact':'Kimlik bilgileri ağda açık taşınır ve DC NTLM relay-to-LDAP saldırılarına açıktır.',
                     'recommendation':'LDAP imzalamayı ve LDAP kanal bağlamayı (channel binding) zorunlu kılın; şifresiz LDAP bağlanmayı reddedin (LDAPS/StartTLS).',
+                    'evidence':'AD_ASSESSMENT.json'})
+            adcs=ad.get('adcs') or {}
+            for esc in (adcs.get('esc') or []):
+                if not isinstance(esc,dict):
+                    continue
+                tag=str(esc.get('esc','ESC'))
+                observations.append({'title':f"ADCS {tag}: istismar edilebilir sertifika şablonu ({esc.get('template','?')})",
+                    'severity':'high','asset':str((adcs.get('cas') or [{}])[0].get('host',dom)),
+                    'description':f"{tag} adayı — {esc.get('detail','')}",
+                    'impact':'Düşük yetkili bir kullanıcı, ayrıcalıklı bir kimlik için kimlik-doğrulama sertifikası alarak etki alanı ayrıcalığı kazanabilir.',
+                    'recommendation':'Şablonda ENROLLEE_SUPPLIES_SUBJECT (SAN) bayrağını kaldırın, yönetici onayı/RA imzası ekleyin, kayıt ve yazma haklarını yalnızca yetkili gruplara verin; certipy ile doğrulayın.',
+                    'evidence':'AD_ASSESSMENT.json'})
+            sv=ad.get('sysvol') or {}
+            if isinstance(sv,dict) and sv.get('cpassword_count'):
+                users=', '.join(str(h.get('username','?')) for h in (sv.get('findings') or [])[:10] if isinstance(h,dict))
+                observations.append({'title':'SYSVOL Group Policy Preferences içinde şifre (GPP cpassword)','severity':'critical','asset':str(ad.get('dc',dom)),
+                    'description':f"SYSVOL'da {sv['cpassword_count']} adet GPP cpassword bulundu ve Microsoft'un yayımladığı anahtarla düz metne çözüldü. Etkilenen hesaplar: {users}.",
+                    'impact':'SYSVOL’u okuyabilen HERHANGİ bir etki alanı kullanıcısı bu parolaları elde edebilir; genellikle yerel yönetici/servis hesabıdır ve yatay harekete olanak verir.',
+                    'recommendation':'İlgili GPP nesnelerini kaldırın (MS14-025), açığa çıkan parolaları hemen sıfırlayın; yerel yönetici parolaları için LAPS kullanın.',
                     'evidence':'AD_ASSESSMENT.json'})
     # --- Opt-in sqlmap (yetkili SQL enjeksiyon testi) sonuçları ---
     for path in sorted((root/'targets').glob('*/raw/sqlmap_result_*.json')) if (root/'targets').exists() else []:

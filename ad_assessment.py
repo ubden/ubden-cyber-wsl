@@ -9,6 +9,8 @@ impact before any becomes verified.
 from __future__ import annotations
 
 import ssl
+import struct
+import uuid
 
 
 def _as_int(entry, field):
@@ -267,6 +269,185 @@ def _deep_enum(connection, base):
     return out
 
 
+# --- ADCS (AD Certificate Services) passive enumeration: CAs, templates, ESC1-4 ---
+# Client-authentication EKUs that let a cert be used to authenticate as its subject.
+_CLIENT_AUTH_EKU = {"1.3.6.1.5.5.7.3.2", "1.3.6.1.5.2.3.4",
+                    "1.3.6.1.4.1.311.20.2.2", "2.5.29.37.0"}
+# Certificate-Enrollment / -AutoEnrollment extended-right GUIDs.
+_ENROLL_GUIDS = {"0e10c968-78fb-11d2-90d4-00c04f79dc55",
+                 "a05b8cc2-17bc-4802-a710-e7c15ab866a2"}
+
+
+def _sid_str(data, off):
+    try:
+        if off + 8 > len(data):
+            return ""
+        rev, count = data[off], data[off + 1]
+        authority = int.from_bytes(bytes(data[off + 2:off + 8]), "big")
+        subs, p = [], off + 8
+        for _ in range(count):
+            if p + 4 > len(data):
+                break
+            subs.append(struct.unpack_from("<I", data, p)[0]); p += 4
+        return "S-%d-%d%s" % (rev, authority, "".join("-%d" % s for s in subs))
+    except Exception:
+        return ""
+
+
+def _parse_dacl(sd):
+    """Self-relative SECURITY_DESCRIPTOR bytes -> [{mask, guid, sid}] for Allow ACEs."""
+    if not isinstance(sd, (bytes, bytearray)) or len(sd) < 20:
+        return []
+    offset_dacl = struct.unpack_from("<I", sd, 16)[0]
+    if offset_dacl == 0 or offset_dacl + 8 > len(sd):
+        return []
+    ace_count = struct.unpack_from("<H", sd, offset_dacl + 4)[0]
+    out, pos = [], offset_dacl + 8
+    for _ in range(ace_count):
+        if pos + 4 > len(sd):
+            break
+        ace_type = sd[pos]
+        ace_size = struct.unpack_from("<H", sd, pos + 2)[0]
+        if ace_size < 4 or pos + ace_size > len(sd):
+            break
+        if ace_type in (0x00, 0x05):  # ACCESS_ALLOWED / ACCESS_ALLOWED_OBJECT
+            body = pos + 4
+            mask = struct.unpack_from("<I", sd, body)[0]
+            guid, p = None, body + 4
+            if ace_type == 0x05:
+                obj_flags = struct.unpack_from("<I", sd, p)[0]; p += 4
+                if obj_flags & 0x1:
+                    try:
+                        guid = str(uuid.UUID(bytes_le=bytes(sd[p:p + 16])))
+                    except Exception:
+                        guid = None
+                    p += 16
+                if obj_flags & 0x2:
+                    p += 16
+            sid = _sid_str(sd, p)
+            if sid:
+                out.append({"mask": mask, "guid": guid, "sid": sid})
+        pos += ace_size
+    return out
+
+
+def _low_priv_sid(sid, domain_sid):
+    if sid in ("S-1-1-0", "S-1-5-11", "S-1-5-32-545"):  # Everyone, Authenticated Users, BUILTIN\Users
+        return True
+    ds = str(domain_sid or "")
+    if ds.upper().startswith("S-1-"):
+        return sid in (f"{ds}-513", f"{ds}-515")  # Domain Users, Domain Computers
+    return False
+
+
+def _template_low_priv_rights(sd, domain_sid):
+    """(low_priv_can_enroll, low_priv_dangerous_write) from a template's DACL, or (None,None)."""
+    try:
+        aces = _parse_dacl(sd)
+    except Exception:
+        return None, None
+    if not aces:
+        return None, None
+    enroll = write = False
+    for ace in aces:
+        if not _low_priv_sid(ace["sid"], domain_sid):
+            continue
+        mask, guid = ace["mask"], ace["guid"]
+        if (mask & 0x100) and (guid is None or guid in _ENROLL_GUIDS):  # DS_CONTROL_ACCESS
+            enroll = True
+        if mask & (0x10000000 | 0x40000000 | 0x00040000 | 0x00080000):  # GenericAll/Write, WriteDacl/Owner
+            write = True
+        if (mask & 0x20) and guid is None:  # WriteProperty over all properties
+            write = True
+    return enroll, write
+
+
+def _adcs(connection, config_nc, domain_sid):
+    """Passive AD CS enumeration over LDAP: CAs, published templates and ESC1-ESC4 candidates.
+    Enrollment/write rights come from each template's DACL when it can be read, so results are
+    precise (a SAN-free template only admins may enroll is NOT reported). ESC6/ESC7/ESC8 need
+    the CA host (certutil/DCOM/HTTP) and are covered by Attack Mode (certipy)."""
+    if not config_nc:
+        return None
+    try:
+        from ldap3 import SUBTREE
+    except Exception:
+        return None
+    pki = f"CN=Public Key Services,CN=Services,{config_nc}"
+    out = {"cas": [], "templates": [], "esc": []}
+    try:
+        connection.search(f"CN=Enrollment Services,{pki}", "(objectClass=pKIEnrollmentService)",
+                          search_scope=SUBTREE, attributes=["cn", "dNSHostName", "certificateTemplates"],
+                          size_limit=50, time_limit=10)
+        for e in connection.entries:
+            out["cas"].append({"name": _val(e, "cn"), "host": _val(e, "dNSHostName"),
+                               "templates": _vals(e, "certificateTemplates")})
+    except Exception:
+        return None
+    if not out["cas"]:
+        return None
+    published = set()
+    for ca in out["cas"]:
+        published.update(t.lower() for t in ca["templates"])
+    sd_control = None
+    try:
+        from ldap3.protocol.microsoft import security_descriptor_control
+        sd_control = security_descriptor_control(sdflags=0x04)  # DACL only
+    except Exception:
+        sd_control = None
+    attrs = ["cn", "msPKI-Certificate-Name-Flag", "msPKI-Enrollment-Flag",
+             "msPKI-RA-Signature", "pKIExtendedKeyUsage", "nTSecurityDescriptor"]
+    try:
+        connection.search(f"CN=Certificate Templates,{pki}", "(objectClass=pKICertificateTemplate)",
+                          search_scope=SUBTREE, attributes=attrs, size_limit=500, time_limit=20,
+                          controls=sd_control)
+        entries = list(connection.entries)
+    except Exception:
+        entries = []
+    for e in entries:
+        name = _val(e, "cn")
+        name_flag = _as_int(e, "msPKI-Certificate-Name-Flag") or 0
+        enroll_flag = _as_int(e, "msPKI-Enrollment-Flag") or 0
+        ra_sig = _as_int(e, "msPKI-RA-Signature") or 0
+        ekus = set(_vals(e, "pKIExtendedKeyUsage"))
+        san_free = bool(name_flag & 0x1)             # ENROLLEE_SUPPLIES_SUBJECT
+        manager_approval = bool(enroll_flag & 0x2)   # PEND_ALL_REQUESTS
+        client_auth = bool(ekus & _CLIENT_AUTH_EKU) or not ekus
+        any_purpose = ("2.5.29.37.0" in ekus) or not ekus
+        enroll_agent = "1.3.6.1.4.1.311.20.2.1" in ekus
+        sd = None
+        try:
+            if "nTSecurityDescriptor" in e and e["nTSecurityDescriptor"].raw_values:
+                sd = e["nTSecurityDescriptor"].raw_values[0]
+        except Exception:
+            sd = None
+        can_enroll, can_write = _template_low_priv_rights(sd, domain_sid) if sd else (None, None)
+        is_pub = name.lower() in published
+        out["templates"].append({"name": name, "published": is_pub, "san_free": san_free,
+                                  "manager_approval": manager_approval, "client_auth": client_auth,
+                                  "ra_signature": ra_sig, "low_priv_enroll": can_enroll,
+                                  "low_priv_write": can_write})
+        # Enrollable = published, no manager approval, no RA countersignature, and a low-priv
+        # principal can enroll (unknown ACL -> not disproven, still a candidate to review).
+        enrollable = is_pub and not manager_approval and ra_sig == 0 and (can_enroll is not False)
+        acl_note = "" if can_enroll is True else (" (kayıt hakkı DACL'den doğrulanamadı; teyit edin)" if can_enroll is None else "")
+        if enrollable and san_free and client_auth:
+            out["esc"].append({"esc": "ESC1", "template": name,
+                "detail": "SAN serbest + istemci kimlik-doğrulama EKU + onay yok + RA imza yok; düşük "
+                          "yetkili kullanıcı SAN belirterek herhangi biri (DA dahil) adına sertifika alabilir." + acl_note})
+        elif enrollable and any_purpose and not san_free:
+            out["esc"].append({"esc": "ESC2", "template": name,
+                "detail": "Any-Purpose / EKU yok + onay yok; sertifika birçok amaç için kötüye kullanılabilir." + acl_note})
+        if enrollable and enroll_agent:
+            out["esc"].append({"esc": "ESC3", "template": name,
+                "detail": "Certificate Request Agent EKU + düşük yetkili kayıt; başka kullanıcı adına sertifika talep edilebilir." + acl_note})
+        if can_write:
+            out["esc"].append({"esc": "ESC4", "template": name,
+                "detail": "Şablon üzerinde düşük yetkili principal'a tehlikeli yazma hakkı (WriteDacl/WriteOwner/"
+                          "GenericAll/GenericWrite/WriteProperty); şablon ESC1'e dönüştürülebilir."})
+    return out
+
+
 def _cleartext_bind(dc, pinned_ip, username, domain, password):
     """Does the DC accept a SIMPLE bind over cleartext LDAP/389 (no TLS)? If yes, LDAP
     signing/channel-binding is not enforced -> credentials cross the wire in the clear and
@@ -383,12 +564,12 @@ def _collect(connection, base, domain, dc, username=""):
     samples = {}
     root_data = {}
     connection.search('', '(objectClass=*)', search_scope=BASE,
-                      attributes=['rootDomainNamingContext', 'dnsHostName',
-                                  'domainFunctionality', 'forestFunctionality'],
+                      attributes=['rootDomainNamingContext', 'configurationNamingContext',
+                                  'dnsHostName', 'domainFunctionality', 'forestFunctionality'],
                       size_limit=1, time_limit=5)
     if connection.entries:
         entry = connection.entries[0]
-        for field in ('rootDomainNamingContext', 'dnsHostName',
+        for field in ('rootDomainNamingContext', 'configurationNamingContext', 'dnsHostName',
                       'domainFunctionality', 'forestFunctionality'):
             value = entry[field].value if field in entry else None
             root_data[field] = str(value) if value is not None else None
@@ -410,6 +591,7 @@ def _collect(connection, base, domain, dc, username=""):
     admins = _domain_admins(connection, base, domain_sid)
     membership = _member_of(connection, base, username)
     deep = _deep_enum(connection, base)
+    adcs = _adcs(connection, root_data.get("configurationNamingContext"), domain_sid)
     result = {"status": "ok", "domain": domain, "dc": dc, "root_dse": root_data,
               "inventory": outcome,
               "user_names": samples.get("users", []), "group_names": samples.get("groups", []),
@@ -423,6 +605,8 @@ def _collect(connection, base, domain, dc, username=""):
     if membership:
         result["test_account_membership"] = membership
     result.update({k: v for k, v in deep.items() if v})
+    if adcs:
+        result["adcs"] = adcs
     return result
 
 
@@ -461,6 +645,13 @@ def inspect(dc: str, domain: str, username: str, password: str,
         cleartext = _cleartext_bind(dc, pinned_ip, username, domain, password)
         if cleartext is not None:
             result["ldap_cleartext_bind"] = cleartext
+        try:
+            import sysvol_probe
+            sysvol = sysvol_probe.crawl(dc, domain, username, password, pinned_ip)
+            if isinstance(sysvol, dict) and sysvol.get("status") == "ok":
+                result["sysvol"] = sysvol
+        except Exception:
+            pass
         return result
     return {"status": "error", "domain": domain, "dc": dc,
             "reason": (f"LDAP baglantisi kurulamadi (denenen: {', '.join(m for m, _ in modes)}); "

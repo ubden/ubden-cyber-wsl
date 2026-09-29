@@ -191,7 +191,9 @@ class AdAssessmentReadsTests(unittest.TestCase):
 
         fake = types.SimpleNamespace(BASE=0, NONE=0, Connection=Conn,
                                      Server=lambda *a, **k: 'srv', Tls=lambda *a, **k: 'tls')
-        with patch.dict(sys.modules, {'ldap3': fake}):
+        import sysvol_probe
+        with patch.dict(sys.modules, {'ldap3': fake}), \
+             patch.object(sysvol_probe, 'crawl', return_value={'status': 'skipped'}):
             result = ad_assessment.inspect('dc.example.test', 'example.test',
                                            'u@example.test', 'pw', '192.0.2.5')
         self.assertEqual(result['status'], 'ok')
@@ -298,6 +300,63 @@ class AdAssessmentReadsTests(unittest.TestCase):
         self.assertNotIn('DC01', out['stale_computers'])
         self.assertEqual(out['computer_os_summary']['Windows Server 2019 Standard'], 1)
 
+    def test_adcs_flags_esc1_when_low_priv_can_enroll(self):
+        import types, struct, uuid, sys
+        from unittest.mock import patch
+        import ad_assessment
+        # ESC1 security descriptor: Authenticated Users get Certificate-Enrollment control access.
+        gid = uuid.UUID('0e10c968-78fb-11d2-90d4-00c04f79dc55').bytes_le
+        sid = bytes([1, 1, 0, 0, 0, 0, 0, 5]) + struct.pack('<I', 11)   # S-1-5-11
+        body = struct.pack('<I', 0x100) + struct.pack('<I', 0x1) + gid + sid
+        ace = bytes([0x05, 0x00]) + struct.pack('<H', 4 + len(body)) + body
+        dacl = bytes([4, 0]) + struct.pack('<H', 8 + len(ace)) + struct.pack('<H', 1) + b'\x00\x00' + ace
+        sd = bytes([1, 0]) + struct.pack('<H', 0x8004) + struct.pack('<I', 0) * 3 + struct.pack('<I', 20) + dacl
+
+        class E:
+            def __init__(self, d, raw=None): self.d = d; self._raw = raw or {}
+            def __contains__(self, k): return k in self.d or k in self._raw
+            def __getitem__(self, k):
+                v = self.d.get(k)
+                return types.SimpleNamespace(value=v, values=v if isinstance(v, list) else ([v] if k in self.d else []),
+                                             raw_values=self._raw.get(k, []))
+
+        ca = E({'cn': 'inventist-CA', 'dNSHostName': 'ca.x.local', 'certificateTemplates': ['ESC1Tmpl', 'User']})
+        tmpl = E({'cn': 'ESC1Tmpl', 'msPKI-Certificate-Name-Flag': 0x1, 'msPKI-Enrollment-Flag': 0,
+                  'msPKI-RA-Signature': 0, 'pKIExtendedKeyUsage': ['1.3.6.1.5.5.7.3.2']},
+                 raw={'nTSecurityDescriptor': [sd]})
+        safe = E({'cn': 'User', 'msPKI-Certificate-Name-Flag': 0, 'msPKI-Enrollment-Flag': 0,
+                  'msPKI-RA-Signature': 0, 'pKIExtendedKeyUsage': ['1.3.6.1.5.5.7.3.2']},
+                 raw={'nTSecurityDescriptor': [sd]})
+
+        class Conn:
+            entries = []
+            def search(self, base, filt, **k):
+                if 'pKIEnrollmentService' in filt: self.entries = [ca]
+                elif 'pKICertificateTemplate' in filt: self.entries = [tmpl, safe]
+                else: self.entries = []
+                return True
+
+        with patch.dict(sys.modules, {'ldap3': types.SimpleNamespace(SUBTREE='SUBTREE', BASE=0)}):
+            out = ad_assessment._adcs(Conn(), 'CN=Configuration,DC=x', 'S-1-5-21-1-2-3')
+        self.assertEqual(out['cas'][0]['name'], 'inventist-CA')
+        escs = {(e['esc'], e['template']) for e in out['esc']}
+        self.assertIn(('ESC1', 'ESC1Tmpl'), escs)
+        self.assertNotIn(('ESC1', 'User'), escs)   # not SAN-free -> not ESC1
+
+    def test_sysvol_cpassword_roundtrip(self):
+        import base64, sysvol_probe
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            from cryptography.hazmat.primitives import padding
+        except Exception:
+            self.skipTest('cryptography unavailable')
+        plain = 'P@ssw0rd!'
+        padder = padding.PKCS7(128).padder()
+        data = padder.update(plain.encode('utf-16-le')) + padder.finalize()
+        enc = Cipher(algorithms.AES(sysvol_probe._GPP_KEY), modes.CBC(b'\x00' * 16)).encryptor()
+        cpw = base64.b64encode(enc.update(data) + enc.finalize()).decode()
+        self.assertEqual(sysvol_probe.decrypt_cpassword(cpw), plain)
+
     def test_falls_back_to_insecure_ldaps_when_strict_fails(self):
         import types
         from unittest.mock import patch
@@ -323,7 +382,9 @@ class AdAssessmentReadsTests(unittest.TestCase):
 
         fake = types.SimpleNamespace(BASE=0, NONE=0, Connection=Conn,
                                      Server=lambda *a, **k: 's', Tls=lambda *a, **k: 't')
-        with patch.dict(sys.modules, {'ldap3': fake}):
+        import sysvol_probe
+        with patch.dict(sys.modules, {'ldap3': fake}), \
+             patch.object(sysvol_probe, 'crawl', return_value={'status': 'skipped'}):
             res = ad_assessment.inspect('dc.x.test', 'x.test', 'u', 'p', '192.0.2.5')
         self.assertEqual(res['status'], 'ok')
         self.assertEqual(res['transport'], 'ldaps_insecure')

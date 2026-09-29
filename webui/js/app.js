@@ -196,6 +196,15 @@
     if(rk.length)h+=`<div class="card" style="margin-bottom:12px"><div class="card-header"><h3>Hesap risk bayrakları</h3><small>userAccountControl</small></div>${rk.map(([k,v])=>`<div class="uac-row"><span class="badge ${/notreqd|reversible|unconstrained|asrep/.test(k)?'high':'medium'}">${esc(UAC[k]||k)} · ${arr(v).length}</span><div class="chip-cloud">${arr(v).slice(0,60).map(x=>`<span class="name-chip mono">${txt(x)}</span>`).join('')}</div></div>`).join('')}</div>`;
     if(gk.length)h+=`${gk.map(([g,m])=>`<details class="folder-group name-group"><summary>${icon('lock')}${esc(g)}<small>${arr(m).length} üye</small></summary><div class="chip-pad">${chips(m)}</div></details>`).join('')}`;
     if(Object.keys(osx).length||stale.length)h+=`<div class="grid cols-2" style="margin:12px 0">${Object.keys(osx).length?`<div class="card"><div class="card-header"><h3>Bilgisayar OS dağılımı</h3><small>AD kaydı</small></div>${barLines(Object.entries(osx).sort((a,b)=>b[1]-a[1]),8)}</div>`:''}${stale.length?`<div class="card"><div class="card-header"><h3>Bayat bilgisayar hesapları</h3><small>90+ gün · ${stale.length}</small></div>${chips(stale)}</div>`:''}</div>`;
+    const adcs=ad.adcs||{},sv=ad.sysvol||{};
+    if(arr(adcs.cas).length){
+      h+=`<div class="section-head"><h3>AD Sertifika Servisleri (ADCS)</h3><small>${arr(adcs.templates).length} şablon</small></div>`;
+      h+=`<div class="card" style="margin-bottom:12px">${keyValues([['Sertifika Yetkilisi (CA)',arr(adcs.cas).map(c=>`${esc(c.name||'?')} <span class="muted">@ ${esc(c.host||'?')}</span>`).join(', ')]])}${arr(adcs.esc).length?`<div class="divider"></div>${arr(adcs.esc).map(e=>`<div class="uac-row"><span class="badge high">${esc(e.esc||'ESC')}</span><div style="flex:1"><b>${esc(e.template||'?')}</b><div class="small muted">${esc(e.detail||'')}</div></div></div>`).join('')}`:'<p class="small muted">Düşük yetkili istismar adayı (ESC1-ESC4) bulunmadı. ESC6/ESC7/ESC8 Attack Mode (certipy) ile değerlendirilir.</p>'}</div>`;
+    }
+    if(sv.cpassword_count){
+      h+=notice(`SYSVOL / Group Policy Preferences: ${sv.cpassword_count} adet cpassword bulundu ve kamuya açık anahtarla çözüldü — KRİTİK. SYSVOL'u okuyabilen her etki alanı kullanıcısı bu parolaları elde edebilir.`);
+      h+=`<div class="table-wrap" style="margin-bottom:12px"><table class="data-table"><thead><tr><th>Dosya</th><th>Kullanıcı</th><th>Yol</th></tr></thead><tbody>${arr(sv.findings).slice(0,30).map(f=>`<tr><td>${esc(f.file_type||'?')}</td><td class="mono">${txt(f.username||'?')}</td><td class="mono">${txt(f.path||'')}</td></tr>`).join('')||'<tr><td colspan="3" class="muted">—</td></tr>'}</tbody></table></div>`;
+    }
     return h;}
 
   function surfaceWeb(){const dsx=arr(ds('DEVICE_INVENTORY').devices).filter(d=>arr(d.ports).some(p=>[80,81,443,8080,8443,5000,5001].includes(Number(p.port))));
