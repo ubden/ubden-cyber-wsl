@@ -256,7 +256,8 @@ class AdAssessmentReadsTests(unittest.TestCase):
         ft = lambda dt: int((dt - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 1e7)
         users = [
             E({'sAMAccountName': 'svc_web', 'userAccountControl': 0x10200,
-               'servicePrincipalName': ['HTTP/web'], 'adminCount': 1}),   # kerberoast + never-expires
+               'servicePrincipalName': ['HTTP/web'], 'adminCount': 1,
+               'description': 'service account password: Summer2024!'}),   # kerberoast + never-expires + desc-pw
             E({'sAMAccountName': 'joe', 'userAccountControl': 0x400200}),  # AS-REP roastable
             E({'sAMAccountName': 'guest', 'userAccountControl': 0x222}),   # disabled + passwd_notreqd
             E({'sAMAccountName': 'krbtgt', 'userAccountControl': 0x400200,
@@ -299,6 +300,39 @@ class AdAssessmentReadsTests(unittest.TestCase):
         self.assertIn('OLD', out['stale_computers'])
         self.assertNotIn('DC01', out['stale_computers'])
         self.assertEqual(out['computer_os_summary']['Windows Server 2019 Standard'], 1)
+        self.assertIn('svc_web', [d['account'] for d in out.get('description_password_candidates', [])])
+
+    def test_acl_sweep_detects_rbcd_write_edge(self):
+        import struct, uuid, types, sys
+        from unittest.mock import patch
+        import ad_assessment
+        gid = uuid.UUID(ad_assessment._RBCD_ATTR).bytes_le
+        sid = bytes([1, 1, 0, 0, 0, 0, 0, 5]) + struct.pack('<I', 11)  # S-1-5-11 Authenticated Users
+        body = struct.pack('<I', 0x20) + struct.pack('<I', 0x1) + gid + sid  # WriteProperty on RBCD attr
+        ace = bytes([0x05, 0x00]) + struct.pack('<H', 4 + len(body)) + body
+        dacl = bytes([4, 0]) + struct.pack('<H', 8 + len(ace)) + struct.pack('<H', 1) + b'\x00\x00' + ace
+        sd = bytes([1, 0]) + struct.pack('<H', 0x8004) + struct.pack('<I', 0) * 3 + struct.pack('<I', 20) + dacl
+
+        class E:
+            def __init__(self, d, raw=None): self.d = d; self._raw = raw or {}
+            def __contains__(self, k): return k in self.d or k in self._raw
+            def __getitem__(self, k):
+                v = self.d.get(k)
+                return types.SimpleNamespace(value=v, values=v if isinstance(v, list) else ([v] if k in self.d else []),
+                                             raw_values=self._raw.get(k, []))
+
+        class Conn:
+            entries = []
+            def search(self, base, filt, search_scope=None, **k):
+                if 'objectSid=' in filt: self.entries = [E({'sAMAccountName': 'helpdesk', 'objectClass': ['group']})]
+                elif filt == '(objectClass=*)': self.entries = [E({}, raw={'nTSecurityDescriptor': [sd]})]
+                else: self.entries = []
+                return True
+
+        with patch.dict(sys.modules, {'ldap3': types.SimpleNamespace(BASE=0, SUBTREE='s')}):
+            risks = ad_assessment._account_acl_risks(Conn(), 'CN=PC1,DC=x', 'DC=x',
+                                                     ad_assessment._safe_sids('S-1-5-21-1-2-3'), None, {})
+        self.assertTrue(any('RBCD' in r['right'] for r in risks))
 
     def test_adcs_flags_esc1_when_low_priv_can_enroll(self):
         import types, struct, uuid, sys

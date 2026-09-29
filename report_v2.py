@@ -530,10 +530,22 @@ def ad_story(root,st,width):
     # Riskli AD: ayrıcalıklı hesap ACL'leri, delegasyon, RBCD (BloodHound-benzeri).
     acl_risks=ad.get('privileged_acl_risks')
     if isinstance(acl_risks,list) and acl_risks:
-        result.append(P('Ayrıcalıklı hesaplar üzerinde tehlikeli haklar',st['SubX']))
-        for r in acl_risks[:40]:
+        result.append(P('Nesneler üzerinde tehlikeli haklar (BloodHound-benzeri ACL taraması)',st['SubX']))
+        for r in acl_risks[:60]:
             if isinstance(r,dict):
-                result.append(P(f"{r.get('account','?')} ← {r.get('principal','?')}: {r.get('right','?')}",st['SmallX'],limit=1500))
+                ot=f" [{r.get('object_type')}]" if r.get('object_type') else ''
+                result.append(P(f"{r.get('account','?')}{ot} ← {r.get('principal','?')}: {r.get('right','?')}",st['SmallX'],limit=1500))
+    hyg=ad.get('privileged_hygiene')
+    if isinstance(hyg,list) and hyg:
+        unused=[h for h in hyg if isinstance(h,dict) and h.get('never_logged_on') and h.get('enabled')]
+        oldpw=[h for h in hyg if isinstance(h,dict) and (h.get('pwd_age_days') or 0)>730 and h.get('enabled')]
+        if unused:
+            result.append(P('Hiç oturum açmamış (kullanılmayan) ayrıcalıklı hesaplar: '+', '.join(h['account'] for h in unused[:30]),st['SmallX'],limit=1500))
+        if oldpw:
+            result.append(P('Parolası çok eski (>2 yıl) ayrıcalıklı hesaplar: '+', '.join(f"{h['account']} ({h['pwd_age_days']}g)" for h in oldpw[:30]),st['SmallX'],limit=1500))
+    descpw=ad.get('description_password_candidates')
+    if isinstance(descpw,list) and descpw:
+        result.append(P(f"Açıklama (description) alanında parola şüphesi ({len(descpw)}): "+', '.join(d.get('account','?') for d in descpw[:30]),st['SmallX'],limit=1500))
     deleg=ad.get('constrained_delegation')
     if isinstance(deleg,list) and deleg:
         result.append(P('Kısıtlı yetkilendirme: '+', '.join(f"{x.get('account')}"+(' [T2A4D]' if x.get('protocol_transition') else '') for x in deleg[:30] if isinstance(x,dict)),st['SmallX'],limit=1500))
@@ -940,12 +952,33 @@ def read_data(root):
                     'impact':'SYSVOL’u okuyabilen HERHANGİ bir etki alanı kullanıcısı bu parolaları elde edebilir; genellikle yerel yönetici/servis hesabıdır ve yatay harekete olanak verir.',
                     'recommendation':'İlgili GPP nesnelerini kaldırın (MS14-025), açığa çıkan parolaları hemen sıfırlayın; yerel yönetici parolaları için LAPS kullanın.',
                     'evidence':'AD_ASSESSMENT.json'})
-            for r in (ad.get('privileged_acl_risks') or [])[:50]:
+            for r in (ad.get('privileged_acl_risks') or [])[:80]:
                 if isinstance(r,dict):
-                    observations.append({'title':f"Ayrıcalıklı hesap üzerinde tehlikeli AD hakkı ({r.get('account','?')})",'severity':'high','asset':dom,
-                        'description':f"{r.get('principal','?')} — güvenli/Tier-0 grup olmadığı halde {r.get('account','?')} hesabı üzerinde '{r.get('right','?')}' hakkına sahip.",
-                        'impact':'Bu hak; parola sıfırlama, shadow credentials veya DCSync yoluyla ayrıcalıklı hesabın ele geçirilmesine ve etki alanı yükseltmesine olanak verebilir.',
+                    ot=r.get('object_type','nesne')
+                    observations.append({'title':f"AD {ot} üzerinde tehlikeli hak: {r.get('account','?')}",'severity':'high','asset':dom,
+                        'description':f"{r.get('principal','?')} — güvenli/Tier-0 principal olmadığı halde {ot} '{r.get('account','?')}' üzerinde '{r.get('right','?')}' hakkına sahip.",
+                        'impact':'Bu hak; parola sıfırlama, shadow credentials, RBCD, SPN yazma, gruba kendini ekleme veya DCSync yoluyla ayrıcalık yükseltme/nesne ele geçirme sağlayabilir.',
                         'recommendation':'Bu ACE’yi kaldırın; ayrıcalıklı (Tier-0) nesneler üzerindeki yazma/kontrol haklarını yalnızca yönetici gruplarıyla sınırlayın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+            for h in (ad.get('privileged_hygiene') or []):
+                if isinstance(h,dict) and h.get('enabled') and h.get('never_logged_on'):
+                    observations.append({'title':f"Kullanılmayan ayrıcalıklı hesap (hiç oturum açmamış): {h.get('account','?')}",'severity':'medium','asset':dom,
+                        'description':f"{h.get('account','?')} ayrıcalıklı bir hesap; etkin ama hiç oturum açmamış (logonCount 0, lastLogon yok)."+(f" Parola yaşı ~{h['pwd_age_days']} gün." if h.get('pwd_age_days') else ''),
+                        'impact':'Kullanılmayan ayrıcalıklı hesaplar saldırı yüzeyini büyütür ve fark edilmeden kötüye kullanılabilir.',
+                        'recommendation':'Gerekmeyen ayrıcalıklı hesabı devre dışı bırakın/kaldırın; gerekliyse parolayı döndürüp izleyin.',
+                        'evidence':'AD_ASSESSMENT.json'})
+                elif isinstance(h,dict) and h.get('enabled') and (h.get('pwd_age_days') or 0)>730:
+                    observations.append({'title':f"Çok eski parolalı ayrıcalıklı hesap: {h.get('account','?')}",'severity':'medium','asset':dom,
+                        'description':f"{h.get('account','?')} ayrıcalıklı hesabının parolası ~{h['pwd_age_days']} gündür değişmemiş.",
+                        'impact':'Uzun ömürlü ayrıcalıklı parolalar sızıntı ve çevrimdışı kırma açısından yüksek risklidir.',
+                        'recommendation':'Ayrıcalıklı hesap parolalarını düzenli döndürün; servis hesapları için gMSA kullanın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+            for d in (ad.get('description_password_candidates') or []):
+                if isinstance(d,dict):
+                    observations.append({'title':f"AD açıklama alanında olası parola: {d.get('account','?')}",'severity':'high','asset':dom,
+                        'description':f"{d.get('account','?')} hesabının description alanı parola içeriyor olabilir: \"{d.get('description','')}\".",
+                        'impact':'Description/info alanları tüm etki alanı kullanıcıları tarafından okunabilir; buradaki bir parola doğrudan kimlik ele geçirmeye yol açar.',
+                        'recommendation':'Açıklama alanındaki parolayı kaldırın ve ilgili hesabın parolasını hemen sıfırlayın; personeli bilgilendirin.',
                         'evidence':'AD_ASSESSMENT.json'})
             for x in (ad.get('constrained_delegation') or [])[:30]:
                 if isinstance(x,dict):

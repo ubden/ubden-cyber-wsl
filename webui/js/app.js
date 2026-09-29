@@ -212,9 +212,18 @@
     if(gpos.length||dist.length)h+=`<div class="grid cols-2" style="margin:12px 0">${gpos.length?`<div class="card"><div class="card-header"><h3>Grup İlkeleri (GPO)</h3><small>${gpos.length}</small></div><div class="table-wrap"><table class="data-table"><thead><tr><th>GPO</th><th>Bağlı yer</th></tr></thead><tbody>${gpos.slice(0,50).map(g=>`<tr><td>${esc(g.name||g.guid||'?')}</td><td class="small">${arr(g.links).length?arr(g.links).map(l=>esc(String(l).split(',')[0])).join(', '):'<span class="muted">bağlı değil</span>'}</td></tr>`).join('')}</tbody></table></div></div>`:''}${dist.length?`<div class="card"><div class="card-header"><h3>OU kullanıcı dağılımı</h3></div>${barLines(dist.slice(0,15).map(x=>[String(x.ou||'').split(',')[0].replace(/^OU=/,''),x.users]))}</div>`:''}</div>`;
     const aclR=arr(ad.privileged_acl_risks),deleg=arr(ad.constrained_delegation),rbcd=arr(ad.rbcd_configured);
     if(aclR.length){
-      h+=`<div class="section-head"><h3>Ayrıcalıklı hesaplarda tehlikeli haklar</h3><small>${aclR.length} · BloodHound-benzeri</small></div><div class="table-wrap" style="margin-bottom:12px"><table class="data-table"><thead><tr><th>Hesap</th><th>Kime</th><th>Hak</th></tr></thead><tbody>${aclR.slice(0,40).map(r=>`<tr><td class="mono">${txt(r.account||'?')}</td><td class="mono">${txt(r.principal||'?')}</td><td><span class="badge high">${esc(r.right||'?')}</span></td></tr>`).join('')}</tbody></table></div>`;
+      h+=`<div class="section-head"><h3>Nesnelerde tehlikeli haklar</h3><small>${aclR.length} · BloodHound-benzeri ACL taraması</small></div><div class="table-wrap" style="margin-bottom:12px"><table class="data-table"><thead><tr><th>Nesne</th><th>Tür</th><th>Kime</th><th>Hak</th></tr></thead><tbody>${aclR.slice(0,80).map(r=>`<tr><td class="mono">${txt(r.account||'?')}</td><td>${esc(r.object_type||'')}</td><td class="mono">${txt(r.principal||'?')}</td><td><span class="badge high">${esc(r.right||'?')}</span></td></tr>`).join('')}</tbody></table></div>`;
     }
     if(deleg.length||rbcd.length)h+=`<div class="grid cols-2" style="margin-bottom:12px">${deleg.length?`<div class="card"><div class="card-header"><h3>Kısıtlı yetkilendirme</h3><small>${deleg.length}</small></div>${chips(deleg.map(x=>String(x.account||'?')+(x.protocol_transition?' [T2A4D]':'')))}</div>`:''}${rbcd.length?`<div class="card"><div class="card-header"><h3>RBCD kurulu</h3><small>${rbcd.length}</small></div>${chips(rbcd)}</div>`:''}</div>`;
+    const hyg=arr(ad.privileged_hygiene),descpw=arr(ad.description_password_candidates);
+    if(hyg.length){
+      const unused=hyg.filter(x=>x.enabled&&x.never_logged_on),oldpw=hyg.filter(x=>x.enabled&&(x.pwd_age_days||0)>730);
+      if(unused.length||oldpw.length)h+=`<div class="grid cols-2" style="margin-bottom:12px">${unused.length?`<div class="card"><div class="card-header"><h3>Kullanılmayan ayrıcalıklı hesaplar</h3><small>hiç oturum açmamış · ${unused.length}</small></div>${chips(unused.map(x=>x.account))}</div>`:''}${oldpw.length?`<div class="card"><div class="card-header"><h3>Çok eski parolalı ayrıcalıklılar</h3><small>&gt;2 yıl · ${oldpw.length}</small></div>${chips(oldpw.map(x=>`${x.account} (${x.pwd_age_days}g)`))}</div>`:''}</div>`;
+    }
+    if(descpw.length){
+      h+=notice(`Açıklama (description) alanında olası parola: ${descpw.length} hesap — description tüm etki alanı kullanıcılarınca okunabilir (KRİTİK).`);
+      h+=`<div class="table-wrap" style="margin-bottom:12px"><table class="data-table"><thead><tr><th>Hesap</th><th>Açıklama</th></tr></thead><tbody>${descpw.slice(0,30).map(d=>`<tr><td class="mono">${txt(d.account||'?')}</td><td>${txt(d.description||'')}</td></tr>`).join('')}</tbody></table></div>`;
+    }
     return h;}
 
   function surfaceWeb(){const dsx=arr(ds('DEVICE_INVENTORY').devices).filter(d=>arr(d.ports).some(p=>[80,81,443,8080,8443,5000,5001].includes(Number(p.port))));

@@ -196,11 +196,14 @@ def _deep_enum(connection, base):
     from datetime import datetime, timezone, timedelta
     out = {}
     risky = {key: [] for key, _, _ in _UAC_FLAGS}
-    kerberoastable, asrep = [], []
+    kerberoastable, asrep, desc_pw = [], [], []
+    # Password-in-description: a keyword (pass/pwd/şifre/parola) followed by a value, or the
+    # whole description looks like a credential — a classic real finding.
+    pw_hint = re.compile(r"(?i)(p[a@]s?sw?o?r?d|pwd|ş[iı]fre|parola|pass|creds?|kimlik)\W{0,3}(\S{3,})")
     try:
         connection.search(base, "(&(objectCategory=person)(objectClass=user))",
                           attributes=["sAMAccountName", "userAccountControl",
-                                      "servicePrincipalName", "adminCount"],
+                                      "servicePrincipalName", "adminCount", "description"],
                           size_limit=5000, time_limit=30)
         for e in connection.entries:
             sam = _val(e, "sAMAccountName")
@@ -216,9 +219,14 @@ def _deep_enum(connection, base):
                                        "admin": bool(_as_int(e, "adminCount"))})
             if (uac & 0x400000) and sam.lower() != "krbtgt":
                 asrep.append(sam)
+            desc = _val(e, "description")
+            if desc and pw_hint.search(desc):
+                desc_pw.append({"account": sam, "description": desc[:200]})
     except Exception:
         pass
     out["risky_accounts"] = {k: sorted(set(v))[:300] for k, v in risky.items() if v}
+    if desc_pw:
+        out["description_password_candidates"] = desc_pw[:100]
     out["kerberoastable"] = sorted(kerberoastable, key=lambda x: x["account"])[:300]
     out["asrep_roastable"] = sorted(set(asrep))[:300]
 
@@ -539,6 +547,9 @@ _DANGER_MASK = 0x10000000 | 0x40000000 | 0x00040000 | 0x00080000  # GenericAll/W
 _RESET_PW = "00299570-246d-11d0-a768-00aa006e0529"
 _DCSYNC = {"1131f6aa-9c07-11d1-f79f-00c04fc2dcd2", "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"}
 _KEYCRED = "5b47d60f-6090-40b2-9f37-2a4de88f3063"   # msDS-KeyCredentialLink (shadow creds)
+_RBCD_ATTR = "3f78c3e5-f79a-46bd-a0b8-9d18116ddc79"   # msDS-AllowedToActOnBehalfOfOtherIdentity
+_SPN_ATTR = "f3a64788-5306-11d1-a9c5-0000f80367c1"    # servicePrincipalName (targeted Kerberoast)
+_MEMBER_ATTR = "bf9679c0-0de6-11d0-a285-00aa003049e2" # member (add self to group)
 
 
 def _safe_sids(domain_sid):
@@ -588,6 +599,12 @@ def _account_acl_risks(connection, dn, base, safe, sd_control, cache):
             right = "DCSync (dizin replikasyonu)"
         elif (mask & 0x20) and guid == _KEYCRED:
             right = "Shadow credentials (msDS-KeyCredentialLink yazma)"
+        elif (mask & 0x20) and guid == _RBCD_ATTR:
+            right = "RBCD yazma (msDS-AllowedToActOnBehalfOfOtherIdentity)"
+        elif (mask & 0x20) and guid == _SPN_ATTR:
+            right = "SPN yazma (hedefli Kerberoast)"
+        elif (mask & 0x20) and guid == _MEMBER_ATTR:
+            right = "Grup üyeliği yazma (kendini gruba ekleme)"
         elif (mask & 0x20) and not guid:
             right = "Tüm özelliklere yazma"
         else:
@@ -620,9 +637,69 @@ def _risky_ad(connection, base, domain_sid):
     acl_risks = []
     for dn, name in list(priv.items())[:40]:
         for risk in _account_acl_risks(connection, dn, base, safe, sd_control, cache):
-            acl_risks.append({"account": name, **risk})
+            acl_risks.append({"account": name, "object_type": "ayrıcalıklı hesap", **risk})
+    # Broaden the sweep: computers, groups and OUs carry the same abusable edges (RBCD/
+    # shadow-cred/member-write/takeover). Bounded so it stays a passive check.
+    try:
+        from ldap3 import SUBTREE
+        swept = 0
+        for filt, kind in (("(objectCategory=computer)", "bilgisayar"),
+                           ("(objectClass=group)", "grup"),
+                           ("(objectCategory=organizationalUnit)", "OU")):
+            if swept >= 600:
+                break
+            connection.search(base, filt, search_scope=SUBTREE,
+                              attributes=["distinguishedName", "sAMAccountName", "name"],
+                              size_limit=2000, time_limit=30)
+            objs = [(_val(e, "distinguishedName"), _val(e, "sAMAccountName") or _val(e, "name"))
+                    for e in connection.entries if _val(e, "distinguishedName")]
+            for dn, name in objs:
+                if swept >= 600:
+                    break
+                swept += 1
+                for risk in _account_acl_risks(connection, dn, base, safe, sd_control, cache):
+                    acl_risks.append({"account": (name or _cn(dn)), "object_type": kind, **risk})
+    except Exception:
+        pass
     if acl_risks:
-        out["privileged_acl_risks"] = acl_risks[:100]
+        seen_edges, uniq = set(), []
+        for r in acl_risks:
+            k = (r.get("account"), r.get("principal"), r.get("right"))
+            if k not in seen_edges:
+                seen_edges.add(k); uniq.append(r)
+        out["privileged_acl_risks"] = uniq[:300]
+    # Privileged-account hygiene: never-logged-on or very-old-password admins (unused DA etc.).
+    try:
+        from ldap3 import BASE
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        hygiene = []
+        for dn, name in list(priv.items())[:60]:
+            try:
+                connection.search(dn, "(objectClass=*)", search_scope=BASE,
+                                  attributes=["sAMAccountName", "pwdLastSet", "lastLogonTimestamp",
+                                              "logonCount", "userAccountControl", "description"],
+                                  size_limit=1, time_limit=8)
+            except Exception:
+                continue
+            if not connection.entries:
+                continue
+            e = connection.entries[0]
+            uac = _as_int(e, "userAccountControl") or 0
+            pw = _filetime_dt(e, "pwdLastSet")
+            ll = _filetime_dt(e, "lastLogonTimestamp")
+            lc = _as_int(e, "logonCount") or 0
+            hygiene.append({"account": _val(e, "sAMAccountName") or name,
+                            "enabled": not bool(uac & 0x2),
+                            "pwd_age_days": (now - pw).days if pw else None,
+                            "last_logon": ll.date().isoformat() if ll else "",
+                            "logon_count": lc,
+                            "never_logged_on": (ll is None and lc == 0),
+                            "description": _val(e, "description")})
+        if hygiene:
+            out["privileged_hygiene"] = hygiene
+    except Exception:
+        pass
     deleg = []
     try:
         connection.search(base, "(msDS-AllowedToDelegateTo=*)",
