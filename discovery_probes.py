@@ -203,8 +203,37 @@ def mdns_scan(timeout: float = 3.0, cap: int = 4096) -> dict:
 
 # ---------------------------------------------------------------- LLDP --
 
+def _parse_cdp(payload: bytes) -> dict:
+    """Parse Cisco CDP TLVs → device_id, software, platform, port_id, mgmt_ip."""
+    info: dict = {"proto": "cdp"}
+    if len(payload) < 4:
+        return {}
+    off = 4  # skip version(1) ttl(1) checksum(2)
+    try:
+        while off + 4 <= len(payload):
+            ttype, tlen = struct.unpack_from(">HH", payload, off)
+            if tlen < 4 or off + tlen > len(payload):
+                break
+            value = payload[off + 4:off + tlen]
+            off += tlen
+            if ttype == 0x0001:
+                info["device_id"] = value.decode("utf-8", "replace")[:80]
+            elif ttype == 0x0003:
+                info["port_id"] = value.decode("utf-8", "replace")[:60]
+            elif ttype == 0x0005:
+                info["software"] = value.decode("utf-8", "replace").splitlines()[0][:200] if value else ""
+            elif ttype == 0x0006:
+                info["platform"] = value.decode("utf-8", "replace")[:80]
+            elif ttype == 0x0002 and len(value) >= 13 and value[8] == 1:  # first addr, IPv4
+                info["mgmt_ip"] = ".".join(str(b) for b in value[9:13])
+    except (struct.error, IndexError):
+        pass
+    return info if info.get("device_id") or info.get("software") else {}
+
+
 def _parse_pcap_lldp(data: bytes) -> dict:
-    """Extract LLDP frames from a classic libpcap file (what `pktmon etl2pcap` writes)."""
+    """Extract LLDP (ethertype 0x88cc) and Cisco CDP (LLC/SNAP OUI 00000c PID 2000) neighbors
+    from a classic libpcap file (what `pktmon etl2pcap` writes)."""
     out: dict = {}
     if len(data) < 24:
         return out
@@ -228,6 +257,10 @@ def _parse_pcap_lldp(data: bytes) -> dict:
             info = _parse_lldp(frame[14:])
             if info:
                 out[info.get("chassis_id") or info.get("system_name") or str(len(out))] = info
+        elif len(frame) >= 22 and frame[14:17] == b"\xaa\xaa\x03" and frame[17:20] == b"\x00\x00\x0c" and frame[20:22] == b"\x20\x00":
+            info = _parse_cdp(frame[22:])
+            if info:
+                out[info.get("device_id") or str(len(out))] = info
     return out
 
 
@@ -257,7 +290,8 @@ def _lldp_windows_pktmon(seconds: float = 40.0) -> dict:
             pass
 
     pk("filter", "remove")
-    pk("filter", "add", "--ethertype", "0x88cc")
+    pk("filter", "add", "--ethertype", "0x88cc")        # LLDP
+    pk("filter", "add", "-m", "01:00:0C:CC:CC:CC")      # Cisco CDP
     pk("start", "--capture", "--pkt-size", "0", "--file-name", str(etl), "--comp", "nics")
     time.sleep(min(max(seconds, 10), 60))
     pk("stop")

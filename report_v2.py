@@ -1010,6 +1010,22 @@ def read_data(root):
                 'impact':'Erişilebilir FortiGate yönetim veya SSL-VPN arayüzü, bilinen FortiOS açıkları (ör. kimlik doğrulama atlatma/RCE) için birincil hedeftir.',
                 'recommendation':'Yönetim arayüzünü güvenilir ağlarla sınırlayın (trusted hosts); gerekmiyorsa SSL-VPN’i kapatın; FortiOS’u yamalı tutun.',
                 'evidence':rel})
+    # --- SMB paylaşım envanteri: düşük yetkili yazılabilir paylaşımlar ---
+    for path in sorted((root/'targets').glob('*/raw/share_*.json')) if (root/'targets').exists() else []:
+        try:
+            item=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError,TypeError):
+            continue
+        if not isinstance(item,dict):
+            continue
+        ip=str(item.get('target',''))
+        for rec in (item.get('non_default') or []):
+            if isinstance(rec,dict) and rec.get('low_priv_writable'):
+                observations.append({'title':f"Düşük yetkili yazılabilir SMB paylaşımı ({rec.get('share','?')})",'severity':'high','asset':ip,
+                    'description':f"\\\\{ip}\\{rec.get('share','?')} paylaşımı düşük yetkili bir principal'a yazma izni veriyor: {', '.join(rec['low_priv_writable'][:6])}.",
+                    'impact':'Herhangi bir etki alanı kullanıcısı bu paylaşıma dosya yazabilir; kötü amaçlı içerik dağıtımı, logon script/GPP değişikliği ve yatay hareket için kullanılabilir.',
+                    'recommendation':'Paylaşım ve NTFS izinlerini en az ayrıcalık ilkesine göre daraltın; yazma iznini yalnızca gereken gruplara verin.',
+                    'evidence':str(path.relative_to(root))})
     # --- Opt-in sqlmap (yetkili SQL enjeksiyon testi) sonuçları ---
     for path in sorted((root/'targets').glob('*/raw/sqlmap_result_*.json')) if (root/'targets').exists() else []:
         try:

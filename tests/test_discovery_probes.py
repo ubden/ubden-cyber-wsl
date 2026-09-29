@@ -61,6 +61,17 @@ class PcapLldpTests(unittest.TestCase):
         self.assertIn("aabbccddeeff", out)
         self.assertEqual(out["aabbccddeeff"]["system_name"], "SW1")
 
+    def test_pktmon_pcap_cdp_frame(self):
+        def tlv(t, v): return struct.pack(">HH", t, 4 + len(v)) + v
+        cdp = b"\x02\xb4\x00\x00" + tlv(0x0001, b"SW-CORE") + tlv(0x0005, b"Cisco IOS 15.2") + tlv(0x0006, b"WS-C2960") + tlv(0x0003, b"Gi0/1")
+        frame = bytes.fromhex("01000ccccccc") + bytes.fromhex("aabbccddeeff") + struct.pack(">H", len(cdp) + 8) + b"\xaa\xaa\x03\x00\x00\x0c\x20\x00" + cdp
+        gh = b"\xd4\xc3\xb2\xa1" + struct.pack("<HHiIII", 2, 4, 0, 0, 65535, 1)
+        rec = struct.pack("<IIII", 0, 0, len(frame), len(frame)) + frame
+        out = DP._parse_pcap_lldp(gh + rec)
+        self.assertIn("SW-CORE", out)
+        self.assertEqual(out["SW-CORE"]["platform"], "WS-C2960")
+        self.assertIn("Cisco IOS", out["SW-CORE"]["software"])
+
 
 class ApplianceTests(unittest.TestCase):
     def test_webmin_and_fortigate(self):

@@ -43,6 +43,7 @@ import appliance_probe
 import credential_probes
 import discovery_probes
 import netbios_probe
+import share_probe
 import vmware_probe
 import web_identify
 import optional_tools
@@ -1136,6 +1137,10 @@ def run_probe_suite(target, meta, root, raw, events, assets, discovered_ports,
             appliance_probe.run(assets,discovered_ports,raw,events)
         except Exception as exc:
             events.append({'step':'appliance_version','status':'warn','detail':str(exc)[:200]})
+        try:
+            share_probe.run(assets,discovered_ports,raw,events)
+        except Exception as exc:
+            events.append({'step':'share_enum','status':'warn','detail':str(exc)[:200]})
         probe_snmp(target,assets,raw,events,meta['max_rate'])
         discover_rootdse(assets,discovered_ports,raw,events)
         network_extras(assets,discovered_ports,raw,events,command)
