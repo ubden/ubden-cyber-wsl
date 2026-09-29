@@ -133,6 +133,11 @@ def _ssh_try(ip, port, username, password, timeout):
         import paramiko
     except ImportError:
         return False
+    # paramiko's Transport runs in a background thread and logs benign "Error reading SSH
+    # protocol banner"/EOF tracebacks (a port-22 that isn't real SSH, or resets) at ERROR —
+    # our except below already handles the outcome, so silence the library noise on mass sweeps.
+    import logging
+    logging.getLogger("paramiko").setLevel(logging.CRITICAL)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:

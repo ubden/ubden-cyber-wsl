@@ -4,9 +4,9 @@ route, and never serve files outside a job's run directory. No network needed.
 import sys
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -17,7 +17,7 @@ import webapp
 class WebappHandlerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+        cls.httpd = webapp.QuietThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.host = cls.httpd.server_address[0]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -81,6 +81,30 @@ class WebappHandlerTests(unittest.TestCase):
         code, body = self._post(f"/api/attack?t={webapp.TOKEN}",
                                  json.dumps({"run": "..\\evil", "user": "u", "password": "p"}).encode())
         self.assertEqual(code, 400)  # no thread spawned; _resolve_run_name blocks traversal
+
+
+class QuietServerTests(unittest.TestCase):
+    def test_benign_client_disconnect_is_swallowed(self):
+        # A browser dropping the socket (ConnectionReset/Abort/BrokenPipe) must NOT
+        # raise or print a stack trace from the server's error handler.
+        srv = object.__new__(webapp.QuietThreadingHTTPServer)  # no socket bind needed
+        for exc in (ConnectionResetError(10054, "reset"), ConnectionAbortedError(), BrokenPipeError()):
+            try:
+                raise exc
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                self.assertIsNone(srv.handle_error(None, ("127.0.0.1", 0)))
+
+    def test_real_error_is_not_swallowed(self):
+        # A genuine handler bug still reaches the base handler (which logs it).
+        srv = object.__new__(webapp.QuietThreadingHTTPServer)
+        seen = []
+        with unittest.mock.patch("socketserver.BaseServer.handle_error",
+                                 lambda self, req, addr: seen.append(addr)):
+            try:
+                raise ValueError("real bug")
+            except ValueError:
+                srv.handle_error(None, ("127.0.0.1", 1))
+        self.assertEqual(seen, [("127.0.0.1", 1)])
 
 
 class RunHelperTests(unittest.TestCase):

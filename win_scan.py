@@ -183,6 +183,8 @@ def test_connection(kind: str, body: dict) -> dict:
             import paramiko
         except Exception:
             return {"ok": False, "detail": "paramiko kurulu değil"}
+        import logging
+        logging.getLogger("paramiko").setLevel(logging.CRITICAL)
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:

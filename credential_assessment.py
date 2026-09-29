@@ -22,6 +22,9 @@ def run_ssh(spec: dict, candidates: list[str], events: list[dict]) -> None:
         events.append({"step": "ssh_password_preflight", "tool": "paramiko", "target": address,
                        "status": "missing_tool", "detail": "paramiko kurulu degil"})
         return
+    # Silence paramiko's background-thread banner/EOF ERROR logging (benign on probes).
+    import logging
+    logging.getLogger("paramiko").setLevel(logging.CRITICAL)
     failed = 0
     for attempt, password in enumerate(candidates, 1):
         try:

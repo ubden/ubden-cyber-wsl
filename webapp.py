@@ -653,6 +653,20 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, target.read_bytes(), ctype)
 
 
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """Loopback UI server that does not dump a traceback when the browser drops a
+    socket mid-request. ConnectionReset/Abort/BrokenPipe are normal here (tab closed,
+    navigation, keep-alive reset) and the default handle_error would print an alarming
+    stack trace to the operator's console for each one. Real errors still surface."""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys as _sys
+        if isinstance(_sys.exc_info()[1], (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return  # benign client disconnect — stay quiet
+        super().handle_error(request, client_address)
+
+
 def serve(open_browser: bool = True):
     # Keep the test machine awake for the whole server session (covers idle time
     # between scans too); best-effort, no-op off Windows.
@@ -661,7 +675,7 @@ def serve(open_browser: bool = True):
         power_manager.stay_awake()
     except Exception:
         power_manager = None
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    httpd = QuietThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/?t={TOKEN}"
     print(f"UBDEN uPenetrator: {url}", flush=True)
