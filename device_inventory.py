@@ -88,6 +88,14 @@ TEXT_RULES = (
     (('router', 'gateway', 'modem', 'residential gateway'), 'router', 34),
     (('access point', 'wireless ap'), 'ap', 34),
     (('smart-ups', 'battery'), 'ups', 42),
+    # mDNS (Bonjour) service types and SSDP device/SERVER hints.
+    (('_ipp._tcp', '_printer._tcp', '_pdl-datastream', '_scanner._tcp', '_uscan._tcp'), 'printer', 55),
+    (('_googlecast._tcp', '_airplay._tcp', '_raop._tcp', '_spotify-connect', '_sonos._tcp', 'dial-multiscreen', 'roku:'), 'iot', 45),
+    (('_apple-mobdev', '_companion-link', '_touch-able', '_homekit'), 'mobile', 40),
+    (('_workstation._tcp', '_rdp._tcp', '_smb._tcp'), 'pc', 22),
+    (('_afpovertcp', '_adisk._tcp', '_nfs._tcp', '_time-machine'), 'nas', 40),
+    (('_sip._tcp', '_h323._tcp', '_sccp'), 'voip', 45),
+    (('upnp', 'ssdp', 'rootdevice'), 'iot', 12),
 )
 PORT_RULES = (
     ((9100,), 'printer', 45), ((515,), 'printer', 40), ((631,), 'printer', 45),
@@ -559,10 +567,29 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                         web_id=wd; break
                 except (ValueError,OSError,AttributeError):
                     pass
+        # mDNS (Bonjour) hostname/services + SSDP (UPnP) SERVER/device type.
+        mdns={}; ssdp={}
+        for rawdir in entry['raws']:
+            if not mdns:
+                mp=rawdir/f'mdns_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
+                if mp.is_file():
+                    try:
+                        md=json.loads(mp.read_text(encoding='utf-8'))
+                        if md.get('target')==ip: mdns=md
+                    except (ValueError,OSError,AttributeError): pass
+            if not ssdp:
+                sp=rawdir/f'ssdp_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
+                if sp.is_file():
+                    try:
+                        sd=json.loads(sp.read_text(encoding='utf-8'))
+                        if sd.get('target')==ip: ssdp=sd
+                    except (ValueError,OSError,AttributeError): pass
         random_mac=bool(mac and int(mac.replace(':','')[:2],16)&2)
         blob=' '.join([vendor]
                       +[f"{p.get('service','')} {p.get('product','')} {p.get('version','')} {p.get('extra_info','')}" for p in ports]
                       +[snmp_description]+entry['hostnames']
+                      +[mdns.get('hostname','')]+list(mdns.get('services') or [])
+                      +[ssdp.get('server','')]+list(ssdp.get('devices') or [])
                       +[o.get('name','') for o in entry['os_matches']]
                       +[netbios.get('name',''),netbios.get('domain','')]
                       +[web_id.get('title',''),web_id.get('server',''),web_id.get('snippet','')])
@@ -583,9 +610,14 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
         ttl_hint=_ttl_hint(entry.get('ttl'))
         if ttl_hint:
             signals=list(signals)+[f'TTL ipucu: {ttl_hint}']
+        if mdns.get('hostname') or mdns.get('services'):
+            signals=list(signals)+[('mDNS: '+(mdns.get('hostname','')+' '+' '.join((mdns.get('services') or [])[:4])).strip())]
+        if ssdp.get('server') or ssdp.get('devices'):
+            signals=list(signals)+[('SSDP: '+(ssdp.get('server','')+' '+' '.join((ssdp.get('devices') or [])[:3])).strip())]
         # Display name: NetBIOS computer name > DNS hostname > web title (kısa/anlamlı) > (blank).
         clean_hostnames=[_clean_name(h) for h in entry['hostnames'] if _clean_name(h)]
-        display_name=_clean_name(netbios.get('name')) or (clean_hostnames[0] if clean_hostnames else '')
+        display_name=(_clean_name(netbios.get('name')) or _clean_name(mdns.get('hostname'))
+                      or (clean_hostnames[0] if clean_hostnames else ''))
         if not display_name and web_id.get('title') and 2 <= len(web_id['title']) <= 40 \
                 and web_id['title'].lower() not in ('login', 'sign in', 'home', 'index', 'welcome'):
             display_name=_clean_name(web_id['title'])

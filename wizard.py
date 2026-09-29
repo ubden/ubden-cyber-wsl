@@ -40,6 +40,7 @@ from credential_assessment import run_ssh as run_ssh_passwords
 from sql_discovery import discover as discover_sql_browser
 from rootdse_probe import discover as discover_rootdse
 import credential_probes
+import discovery_probes
 import netbios_probe
 import web_identify
 import optional_tools
@@ -1120,6 +1121,10 @@ def run_probe_suite(target, meta, root, raw, events, assets, discovered_ports,
                     discovered_ports[ip]=sorted(set(discovered_ports.get(ip,[]))|set(extra))
         discover_sql_browser(assets,raw,events,meta['max_rate'])
         netbios_probe.run(assets,discovered_ports,raw,events)
+        try:
+            discovery_probes.run(assets,discovered_ports,raw,events)
+        except Exception as exc:
+            events.append({'step':'discovery','status':'warn','detail':str(exc)[:200]})
         web_identify.run(assets,discovered_ports,raw,events)
         probe_snmp(target,assets,raw,events,meta['max_rate'])
         discover_rootdse(assets,discovered_ports,raw,events)

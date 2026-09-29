@@ -96,20 +96,20 @@ UBDEN Cyber Security Systems test ekibi
 PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.38/bootstrap.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.38/bootstrap.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap.ps1' | iex"
 ```
 
-Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v5.0.0-wsl.38/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
+Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v5.0.0-wsl.39/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
 
 Kurulum önce mirrored ağı ve DNS tünellemeyi dener. Mirrored yapılandırması bilgisayardaki **tüm WSL 2 dağıtımlarını** etkiler. Mirrored başlatılamazsa Kali IPv4 adresi ve varsayılan rota doğrulanarak NAT ağında devam edilir. IP tabanlı LAN testlerinde Windows adaptör rotası ve Kali rotası her hedef için ayrıca denetlenir; hedefe erişim doğrulanmadan test başarılı sayılmaz. NAT modunda Kali fiziksel Windows ağ kartlarını doğrudan görmez. Ham katman-2, yayın trafiği, pasif fiziksel ağ yakalama ve bazı VPN yolları için ayrı uygunluk denetimi gerekir. Kullanılan ağ modu görev raporuna yazılır.
 
-Windows'un kendi Wi‑Fi IP adresine Windows'tan `ping` atılması, aynı adrese Kali WSL'den erişilebildiğini göstermez. Kapsam içindeki seçili Windows adaptör adresleri cihaz envanterinde ayrı bir kanıt sınıfı olarak gösterilir. Kali yanıt alamazsa bu adresler servis taraması yapılmış cihaz sayısına eklenmez; raporda erişim doğrulanamadı olarak görünür. CIDR keşfi, ICMP'ye ek olarak 16 yaygın servis portunda sınırlı TCP SYN yoklaması yapar. İkisine de yanıt vermeyen bir cihazın kapalı olduğu varsayılmaz. Ayrıca her taramada, ayrıcalıklı **SYN taramasının bir yönlendirici/güvenlik duvarı ardındaki hostlarda “filtrelenmiş” dönmesi** (ör. başka VLAN'daki IP telefonları) durumuna karşı, işletim sistemi TCP yığınını kullanan bir **TCP connect (-sT) doğrulama taraması** yüksek değerli portlarda (SIP 5060, SCCP/MGCP 2000/2427, web, yönetim) çalışır ve sonuçları birleştirir; böylece SYN'in kaçırdığı VoIP/servis portları görülür ve cihazlar sınıflandırılabilir. Gözlenen **TTL** değeri de bir cihaz-ailesi ipucu (Windows 128 / Linux-gömülü 64 / ağ cihazı 255) olarak kaydedilir.
+Windows'un kendi Wi‑Fi IP adresine Windows'tan `ping` atılması, aynı adrese Kali WSL'den erişilebildiğini göstermez. Kapsam içindeki seçili Windows adaptör adresleri cihaz envanterinde ayrı bir kanıt sınıfı olarak gösterilir. Kali yanıt alamazsa bu adresler servis taraması yapılmış cihaz sayısına eklenmez; raporda erişim doğrulanamadı olarak görünür. CIDR keşfi, ICMP'ye ek olarak 16 yaygın servis portunda sınırlı TCP SYN yoklaması yapar. İkisine de yanıt vermeyen bir cihazın kapalı olduğu varsayılmaz. Ayrıca her taramada, ayrıcalıklı **SYN taramasının bir yönlendirici/güvenlik duvarı ardındaki hostlarda “filtrelenmiş” dönmesi** (ör. başka VLAN'daki IP telefonları) durumuna karşı, işletim sistemi TCP yığınını kullanan bir **TCP connect (-sT) doğrulama taraması** yüksek değerli portlarda (SIP 5060, SCCP/MGCP 2000/2427, web, yönetim) çalışır ve sonuçları birleştirir; böylece SYN'in kaçırdığı VoIP/servis portları görülür ve cihazlar sınıflandırılabilir. Gözlenen **TTL** değeri de bir cihaz-ailesi ipucu (Windows 128 / Linux-gömülü 64 / ağ cihazı 255) olarak kaydedilir. Ek olarak **mDNS/Bonjour (5353), SSDP/UPnP (1900) ve LLDP (0x88cc)** keşfi çalışır: cihazlar kimlik doğrulamadan **ad ve tip** bilgisini gönüllü açıklar (yazıcı `_ipp._tcp`, Apple `_apple-mobdev`, medya `_googlecast/_airplay`, NAS `_afpovertcp`, Roku/UPnP `SERVER` başlığı) — böylece port taraması “bilinmiyor” bıraktığı yazıcı/AV/IoT cihazları adlandırılıp sınıflandırılır. LLDP ham L2 yakalama gerektirir (Linux/Kali; Windows'ta Npcap yakalama yolu yoksa atlanır).
 
 ## Windows-native alternatif: uPenetrator (tarayıcı arayüzü, WSL'siz)
 
@@ -126,13 +126,13 @@ ve Nmap+Npcap'i kurar.
 İkinci tek satırlık kurulum — PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.38/bootstrap-win.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap-win.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.38/bootstrap-win.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap-win.ps1' | iex"
 ```
 
 Kurucu kaynağı indirir, ayrı bir yönetici penceresinde `ubden-win.ps1`'i çalıştırır,
@@ -330,10 +330,10 @@ Resmî Kali `wordlists` paketi WSL kurulumuna dahildir. Sözlükler yalnız mü�
 
 ## Kurulum ve ortam yönetimi
 
-Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v5.0.0-wsl.38\ubden-wsl.ps1` konumundadır:
+Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-wsl.ps1` konumundadır:
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.38\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-wsl.ps1'
 & $ubden -Action status
 & $ubden -Action run
 ```
@@ -345,6 +345,6 @@ $ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.38\ubden-w
 **Windows-native imha (`ubden-win.ps1 -Action destroy`):** Görev bitince Windows tarafını **varsayılana** döndürür (onay için `DESTROY` yazılır; `-Yes` ile sessiz): (1) Windows Defender gerçek-zamanlı korumayı ve Güvenlik Duvarını **geri açar**, eklenen istisnaları kaldırır; (2) güç planını ve ekran koruyucuyu eski haline alır (uyku/hazırda bekleme yeniden etkin); (3) BGInfo masaüstü panelini kaldırıp **önceki duvar kâğıdını** geri getirir; (4) kurduğumuz **venv + araçlar + durum** dosyalarını (`%LOCALAPPDATA%\UBDEN`) siler; (5) isteğe bağlı olarak Kali'deki `offensive-ext` eklentisini ve (ayrı sorup) winget ile Python/Nmap'i kaldırır. **Raporlar korunur** (`%LOCALAPPDATA%\UBDEN-Cyber\Reports`) — teslimattır. Kurulum dizininin kendisi (betik oradan çalıştığı için) elle silinebilir.
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.38\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-wsl.ps1'
 & $ubden -Action destroy -ExportTo 'D:\UBDEN-Rapor-Devir'
 ```
