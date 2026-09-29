@@ -92,7 +92,7 @@ TEXT_RULES = (
 PORT_RULES = (
     ((9100,), 'printer', 45), ((515,), 'printer', 40), ((631,), 'printer', 45),
     ((554,), 'camera', 40), ((37777, 37778), 'camera', 60), ((34567,), 'camera', 45),
-    ((5060, 5061), 'voip', 55),
+    ((5060, 5061), 'voip', 55), ((2000, 2427), 'voip', 22), ((1720,), 'voip', 20),  # SIP / SCCP·MGCP / H.323
     ((902, 903), 'hypervisor', 55), ((8006,), 'hypervisor', 60), ((5480,), 'hypervisor', 30),
     ((1433,), 'db', 48), ((3306,), 'db', 45), ((5432,), 'db', 45), ((1521,), 'db', 45),
     ((27017,), 'db', 40), ((6379,), 'db', 32),
@@ -384,6 +384,19 @@ def _clean_name(value):
     return text.strip()[:120]
 
 
+def _ttl_hint(ttl):
+    """Rough device family from an observed TTL (initial 64/128/255 minus a few hops)."""
+    if not ttl:
+        return ''
+    if 100 <= ttl <= 128:
+        return 'Windows ana bilgisayar (başlangıç TTL 128)'
+    if 40 <= ttl <= 64:
+        return 'Linux/Unix/gömülü cihaz (başlangıç TTL 64)'
+    if ttl >= 200:
+        return 'Ağ cihazı — yönlendirici/anahtar/yazıcı/telefon (başlangıç TTL 255)'
+    return f'TTL={ttl}'
+
+
 def _enrich_from_ad(devices, root):
     """Overlay AD computer facts (dNSHostName + OS) onto observed devices by IP. AD is an
     authoritative name source that works across subnets (LDAP + forward DNS), so it fills
@@ -486,6 +499,16 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                 if not entry['os_matches']:
                     entry['os_matches']=[{'name': item.get('name','')[:120], 'accuracy': item.get('accuracy','')}
                                          for item in host.findall('./os/osmatch')][:3]
+                if not entry.get('ttl'):
+                    st=host.find('status')
+                    ttl=st.get('reason_ttl') if st is not None else None
+                    if not ttl:
+                        for p in host.findall('./ports/port'):
+                            s=p.find('state')
+                            if s is not None and s.get('reason_ttl'):
+                                ttl=s.get('reason_ttl'); break
+                    if ttl and str(ttl).isdigit() and int(ttl)>0:
+                        entry['ttl']=int(ttl)
                 rel=str(path.relative_to(root))
                 if rel not in entry['evidence']:
                     entry['evidence'].append(rel)
@@ -557,6 +580,9 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                                    + (f' · Server: {web_id["server"]}' if web_id.get('server') else '')]
         elif web_id.get('server'):
             signals=list(signals)+[f'Web sunucusu: {web_id["server"]}']
+        ttl_hint=_ttl_hint(entry.get('ttl'))
+        if ttl_hint:
+            signals=list(signals)+[f'TTL ipucu: {ttl_hint}']
         # Display name: NetBIOS computer name > DNS hostname > web title (kısa/anlamlı) > (blank).
         clean_hostnames=[_clean_name(h) for h in entry['hostnames'] if _clean_name(h)]
         display_name=_clean_name(netbios.get('name')) or (clean_hostnames[0] if clean_hostnames else '')
@@ -584,6 +610,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                      'signals':signals,'ports':ports,'role_candidates':roles,
                      'hostnames':clean_hostnames,'os_matches':entry['os_matches'],
                      'review_notes':review,'notices':notices,'snmp_sysdescr':snmp_description,
+                     'ttl':entry.get('ttl'),'os_ttl_hint':ttl_hint,
                      'evidence':'; '.join(entry['evidence'])}
     for path in sorted((root/'targets').glob('*/raw/sql_browser_*.json')) if (root/'targets').exists() else []:
         try:

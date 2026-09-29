@@ -404,6 +404,50 @@ def _ports_arg(meta: dict) -> list:
     return ["--top-ports", str(meta["top_ports"])]
 
 
+# High-value ports for the connect-scan augmentation (VoIP/SIP/SCCP, web, mgmt, remote).
+_AUGMENT_PORTS = ("21,22,23,25,53,80,81,110,143,161,443,445,515,554,631,993,995,1720,1723,"
+                  "2000,2427,3389,5060,5061,5222,5432,7070,8000,8080,8443,9100")
+
+
+def _connect_scan_augment(target, assets, meta, raw, events, progress, open_ports):
+    """A TCP connect (-sT) pass over high-value ports, merged into open_ports.
+
+    A privileged SYN scan (-sS) often comes back 'filtered' for hosts behind a routed
+    firewall (e.g. VoIP phones on other VLANs), so those live hosts end up with zero ports
+    and never get classified/probed. A connect scan uses the OS TCP stack and traverses
+    routing/NAT/firewall like ordinary traffic — which is what a full connect scanner sees
+    (SIP 5060 + SCCP 2000 on IP phones, web/mgmt elsewhere). Purely additive.
+    """
+    if not shutil.which("nmap") or not assets:
+        return
+    ipv6 = ["-6"] if any(":" in a for a in assets) else []
+    xml = raw / "nmap_connect.xml"
+    base = ["nmap"] + ipv6 + ["-n", "-sT", "-sV", "--version-light", "-T3",
+                              "--max-rate", str(meta["max_rate"]), "--max-retries", "1",
+                              "--host-timeout", "8m", "-p", _AUGMENT_PORTS, "-oX", str(xml)]
+    if wizard.is_network(target):
+        argv = base + [target]
+    else:
+        listf = raw / "connect_targets.txt"
+        listf.write_text("\n".join(assets) + "\n", encoding="ascii")
+        argv = base + ["-iL", str(listf)]
+    progress(f"{target}: TCP connect dogrulama taramasi (SYN'in kacirdigi VoIP/servis portlari)", "info")
+    try:
+        win_proc.run("nmap_connect", argv, raw, events,
+                     timeout=min(86400, max(900, len(assets) * 5 + 600)),
+                     on_tick=lambda n, e, t: progress(f"{n}: {int(e)}s / {int(t)}s", "tick"))
+    except Exception as exc:
+        events.append({"step": "connect_augment", "target": target, "status": "warn", "detail": str(exc)[:200]})
+        return
+    try:
+        merged = wizard.open_tcp_ports_by_host(xml, assets)
+    except Exception:
+        merged = {}
+    for ip, extra in merged.items():
+        if extra:
+            open_ports[ip] = sorted(set(open_ports.get(ip, [])) | set(extra))
+
+
 def _scan_scope(target, assets, meta, raw, events, progress):
     """One ARP-enabled Nmap pass (no -Pn/--disable-arp-ping) → ports + on-link MAC.
 
@@ -424,6 +468,7 @@ def _scan_scope(target, assets, meta, raw, events, progress):
                      timeout=min(86400, max(1800, len(assets) * 8 + 1200)),
                      on_tick=lambda n, e, t: progress(f"{n}: {int(e)}s / {int(t)}s", "tick"))
         open_ports = wizard.open_tcp_ports_by_host(raw / f"{name}.xml", assets)
+        _connect_scan_augment(target, assets, meta, raw, events, progress, open_ports)
     else:
         open_ports = {}
         for ip in assets:
@@ -437,6 +482,7 @@ def _scan_scope(target, assets, meta, raw, events, progress):
             win_proc.run(name, argv, raw, events, timeout=600,
                          on_tick=lambda n, e, t: progress(f"{n}: {int(e)}s / {int(t)}s", "tick"))
             open_ports[ip] = wizard.open_tcp_ports(raw / f"{name}.xml")
+        _connect_scan_augment(target, assets, meta, raw, events, progress, open_ports)
     return open_ports
 
 
