@@ -396,6 +396,43 @@ class AdAssessmentReadsTests(unittest.TestCase):
         self.assertIn('LocalAdmin_Policy', out['admin_like_groups'])
         self.assertIn('elektra', out['admin_like_groups']['LocalAdmin_Policy']['members'])
 
+    def test_account_acl_risk_detects_genericall_by_non_admin(self):
+        import struct, types, sys
+        from unittest.mock import patch
+        import ad_assessment
+        sid = bytes([1, 5, 0, 0, 0, 0, 0, 5]) + b''.join(struct.pack('<I', x) for x in (21, 1, 2, 3, 1105))
+        ace = bytes([0x00, 0x00]) + struct.pack('<H', 8 + len(sid)) + struct.pack('<I', 0x10000000) + sid
+        dacl = bytes([4, 0]) + struct.pack('<H', 8 + len(ace)) + struct.pack('<H', 1) + b'\x00\x00' + ace
+        sd = bytes([1, 0]) + struct.pack('<H', 0x8004) + struct.pack('<I', 0) * 3 + struct.pack('<I', 20) + dacl
+
+        class E:
+            def __init__(self, d, raw=None): self.d = d; self._raw = raw or {}
+            def __contains__(self, k): return k in self.d or k in self._raw
+            def __getitem__(self, k):
+                v = self.d.get(k)
+                return types.SimpleNamespace(value=v, values=v if isinstance(v, list) else ([v] if k in self.d else []),
+                                             raw_values=self._raw.get(k, []))
+
+        class Conn:
+            entries = []
+            def search(self, base, filt, search_scope=None, **k):
+                if 'objectSid=' in filt:
+                    self.entries = [E({'sAMAccountName': 'helpdesk', 'objectClass': ['user']})]
+                elif filt == '(objectClass=*)':
+                    self.entries = [E({}, raw={'nTSecurityDescriptor': [sd]})]
+                else:
+                    self.entries = []
+                return True
+
+        safe = ad_assessment._safe_sids('S-1-5-21-1-2-3')
+        with patch.dict(sys.modules, {'ldap3': types.SimpleNamespace(BASE=0, SUBTREE='s')}):
+            risks = ad_assessment._account_acl_risks(Conn(), 'CN=svc.da,DC=x', 'DC=x', safe, None, {})
+        self.assertTrue(risks)
+        self.assertEqual(risks[0]['principal'], 'helpdesk')
+        self.assertIn('Tam kontrol', risks[0]['right'])
+        # a safe principal (Domain Admins, -512) must NOT be flagged
+        self.assertIn('S-1-5-21-1-2-3-512', safe)
+
     def test_falls_back_to_insecure_ldaps_when_strict_fails(self):
         import types
         from unittest.mock import patch

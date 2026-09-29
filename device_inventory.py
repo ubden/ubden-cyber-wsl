@@ -567,8 +567,8 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                         web_id=wd; break
                 except (ValueError,OSError,AttributeError):
                     pass
-        # mDNS (Bonjour) hostname/services + SSDP (UPnP) SERVER/device type.
-        mdns={}; ssdp={}
+        # mDNS (Bonjour) hostname/services + SSDP (UPnP) SERVER/device type + vSphere version.
+        mdns={}; ssdp={}; vmware={}
         for rawdir in entry['raws']:
             if not mdns:
                 mp=rawdir/f'mdns_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
@@ -584,12 +584,20 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                         sd=json.loads(sp.read_text(encoding='utf-8'))
                         if sd.get('target')==ip: ssdp=sd
                     except (ValueError,OSError,AttributeError): pass
+            if not vmware:
+                vp=rawdir/f'vmware_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
+                if vp.is_file():
+                    try:
+                        vd=json.loads(vp.read_text(encoding='utf-8'))
+                        if vd.get('target')==ip: vmware=vd
+                    except (ValueError,OSError,AttributeError): pass
         random_mac=bool(mac and int(mac.replace(':','')[:2],16)&2)
         blob=' '.join([vendor]
                       +[f"{p.get('service','')} {p.get('product','')} {p.get('version','')} {p.get('extra_info','')}" for p in ports]
                       +[snmp_description]+entry['hostnames']
                       +[mdns.get('hostname','')]+list(mdns.get('services') or [])
                       +[ssdp.get('server','')]+list(ssdp.get('devices') or [])
+                      +[vmware.get('product',''),vmware.get('version','')]
                       +[o.get('name','') for o in entry['os_matches']]
                       +[netbios.get('name',''),netbios.get('domain','')]
                       +[web_id.get('title',''),web_id.get('server',''),web_id.get('snippet','')])
@@ -614,6 +622,8 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
             signals=list(signals)+[('mDNS: '+(mdns.get('hostname','')+' '+' '.join((mdns.get('services') or [])[:4])).strip())]
         if ssdp.get('server') or ssdp.get('devices'):
             signals=list(signals)+[('SSDP: '+(ssdp.get('server','')+' '+' '.join((ssdp.get('devices') or [])[:3])).strip())]
+        if vmware.get('product'):
+            signals=list(signals)+[f"vSphere sürüm ifşası (kimliksiz): {vmware['product']}"+(f" build {vmware.get('build')}" if vmware.get('build') else '')]
         # Display name: NetBIOS computer name > DNS hostname > web title (kısa/anlamlı) > (blank).
         clean_hostnames=[_clean_name(h) for h in entry['hostnames'] if _clean_name(h)]
         display_name=(_clean_name(netbios.get('name')) or _clean_name(mdns.get('hostname'))

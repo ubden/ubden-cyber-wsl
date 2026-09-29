@@ -96,16 +96,16 @@ UBDEN Cyber Security Systems test ekibi
 PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.40/bootstrap.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.40/bootstrap.ps1' | iex"
 ```
 
-Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v5.0.0-wsl.39/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
+Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v5.0.0-wsl.40/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
 
 Kurulum önce mirrored ağı ve DNS tünellemeyi dener. Mirrored yapılandırması bilgisayardaki **tüm WSL 2 dağıtımlarını** etkiler. Mirrored başlatılamazsa Kali IPv4 adresi ve varsayılan rota doğrulanarak NAT ağında devam edilir. IP tabanlı LAN testlerinde Windows adaptör rotası ve Kali rotası her hedef için ayrıca denetlenir; hedefe erişim doğrulanmadan test başarılı sayılmaz. NAT modunda Kali fiziksel Windows ağ kartlarını doğrudan görmez. Ham katman-2, yayın trafiği, pasif fiziksel ağ yakalama ve bazı VPN yolları için ayrı uygunluk denetimi gerekir. Kullanılan ağ modu görev raporuna yazılır.
 
@@ -126,13 +126,13 @@ ve Nmap+Npcap'i kurar.
 İkinci tek satırlık kurulum — PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap-win.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.40/bootstrap-win.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.39/bootstrap-win.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.40/bootstrap-win.ps1' | iex"
 ```
 
 Kurucu kaynağı indirir, ayrı bir yönetici penceresinde `ubden-win.ps1`'i çalıştırır,
@@ -184,6 +184,16 @@ araçların yanlış-pozitiflerinden kaçınır; ESC6/ESC7/ESC8 Attack Mode/cert
 yolda, WSL/Kali’de nxc `--gpp-password`). Ayrıca **GPO** listesi ve `gPLink` bağlantıları (hangi
 politika hangi OU/etki alanına uygulanıyor), **OU kullanıcı dağılımı** ve **yönetici-benzeri özel
 gruplar** (ör. GPO ile yerel admin dağıtan bir grup, üyeleriyle) çıkarılır.
+
+**Riskli AD (BloodHound-benzeri, salt-okunur):** Ayrıcalıklı hesaplar (Domain Admins üyeleri)
+üzerinde **güvenli/Tier-0 olmayan** bir principal'ın tehlikeli hakkı (GenericAll/Write, WriteDacl/
+Owner, **parola sıfırlama**, **DCSync**, **shadow credentials / msDS-KeyCredentialLink**) güvenlik
+tanımlayıcısı (DACL) çözülerek tespit edilir; **kısıtlı yetkilendirme** (msDS-AllowedToDelegateTo,
+T2A4D protokol geçişi) ve **RBCD** (msDS-AllowedToActOnBehalfOfOtherIdentity) listelenir — hepsi
+taslak bulgu. Ve **VMware vCenter/ESXi kimliksiz sürüm ifşası**: vSphere SDK'ya (`/sdk`)
+RetrieveServiceContent SOAP çağrısıyla `about.fullName`/sürüm/derleme (ör. "vCenter Server 6.7.0
+build-19299595") kimlik doğrulamadan okunur; hem cihazı hypervisor olarak kimliklendirir hem de
+CVE eşlemesi için kesin derleme numarasını verir.
 
 **Ağ adaptörü tespiti (Windows-native):** gerçek NIC’ler artık `Get-NetAdapter` + WMI
 `Win32_NetworkAdapter (PhysicalAdapter)` birleşimiyle bulunur; `Get-NetAdapter`’ın atladığı gizli/
@@ -330,10 +340,10 @@ Resmî Kali `wordlists` paketi WSL kurulumuna dahildir. Sözlükler yalnız mü�
 
 ## Kurulum ve ortam yönetimi
 
-Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-wsl.ps1` konumundadır:
+Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v5.0.0-wsl.40\ubden-wsl.ps1` konumundadır:
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.40\ubden-wsl.ps1'
 & $ubden -Action status
 & $ubden -Action run
 ```
@@ -345,6 +355,6 @@ $ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-w
 **Windows-native imha (`ubden-win.ps1 -Action destroy`):** Görev bitince Windows tarafını **varsayılana** döndürür (onay için `DESTROY` yazılır; `-Yes` ile sessiz): (1) Windows Defender gerçek-zamanlı korumayı ve Güvenlik Duvarını **geri açar**, eklenen istisnaları kaldırır; (2) güç planını ve ekran koruyucuyu eski haline alır (uyku/hazırda bekleme yeniden etkin); (3) BGInfo masaüstü panelini kaldırıp **önceki duvar kâğıdını** geri getirir; (4) kurduğumuz **venv + araçlar + durum** dosyalarını (`%LOCALAPPDATA%\UBDEN`) siler; (5) isteğe bağlı olarak Kali'deki `offensive-ext` eklentisini ve (ayrı sorup) winget ile Python/Nmap'i kaldırır. **Raporlar korunur** (`%LOCALAPPDATA%\UBDEN-Cyber\Reports`) — teslimattır. Kurulum dizininin kendisi (betik oradan çalıştığı için) elle silinebilir.
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.39\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.40\ubden-wsl.ps1'
 & $ubden -Action destroy -ExportTo 'D:\UBDEN-Rapor-Devir'
 ```

@@ -527,6 +527,19 @@ def ad_story(root,st,width):
     dist=ad.get('ou_user_distribution')
     if isinstance(dist,list) and dist:
         result.append(P('OU kullanıcı dağılımı: '+', '.join(f"{str(x.get('ou','')).split(',')[0]}={x.get('users')}" for x in dist[:20] if isinstance(x,dict)),st['SmallX'],limit=1500))
+    # Riskli AD: ayrıcalıklı hesap ACL'leri, delegasyon, RBCD (BloodHound-benzeri).
+    acl_risks=ad.get('privileged_acl_risks')
+    if isinstance(acl_risks,list) and acl_risks:
+        result.append(P('Ayrıcalıklı hesaplar üzerinde tehlikeli haklar',st['SubX']))
+        for r in acl_risks[:40]:
+            if isinstance(r,dict):
+                result.append(P(f"{r.get('account','?')} ← {r.get('principal','?')}: {r.get('right','?')}",st['SmallX'],limit=1500))
+    deleg=ad.get('constrained_delegation')
+    if isinstance(deleg,list) and deleg:
+        result.append(P('Kısıtlı yetkilendirme: '+', '.join(f"{x.get('account')}"+(' [T2A4D]' if x.get('protocol_transition') else '') for x in deleg[:30] if isinstance(x,dict)),st['SmallX'],limit=1500))
+    rbcd=ad.get('rbcd_configured')
+    if isinstance(rbcd,list) and rbcd:
+        result.append(P('RBCD kurulu hesaplar: '+', '.join(rbcd[:30]),st['SmallX'],limit=1500))
     if ad.get('forest') or ad.get('domain_mode'):
         result.append(P(f"Orman: {ad.get('forest','?')} · Orman modu: {ad.get('forest_mode','?')} · Alan modu: {ad.get('domain_mode','?')}",st['SmallX']))
     if ad.get('dc_dns_records'):
@@ -927,6 +940,39 @@ def read_data(root):
                     'impact':'SYSVOL’u okuyabilen HERHANGİ bir etki alanı kullanıcısı bu parolaları elde edebilir; genellikle yerel yönetici/servis hesabıdır ve yatay harekete olanak verir.',
                     'recommendation':'İlgili GPP nesnelerini kaldırın (MS14-025), açığa çıkan parolaları hemen sıfırlayın; yerel yönetici parolaları için LAPS kullanın.',
                     'evidence':'AD_ASSESSMENT.json'})
+            for r in (ad.get('privileged_acl_risks') or [])[:50]:
+                if isinstance(r,dict):
+                    observations.append({'title':f"Ayrıcalıklı hesap üzerinde tehlikeli AD hakkı ({r.get('account','?')})",'severity':'high','asset':dom,
+                        'description':f"{r.get('principal','?')} — güvenli/Tier-0 grup olmadığı halde {r.get('account','?')} hesabı üzerinde '{r.get('right','?')}' hakkına sahip.",
+                        'impact':'Bu hak; parola sıfırlama, shadow credentials veya DCSync yoluyla ayrıcalıklı hesabın ele geçirilmesine ve etki alanı yükseltmesine olanak verebilir.',
+                        'recommendation':'Bu ACE’yi kaldırın; ayrıcalıklı (Tier-0) nesneler üzerindeki yazma/kontrol haklarını yalnızca yönetici gruplarıyla sınırlayın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+            for x in (ad.get('constrained_delegation') or [])[:30]:
+                if isinstance(x,dict):
+                    observations.append({'title':f"Kısıtlı Kerberos yetkilendirmesi ({x.get('account','?')})",'severity':'high' if x.get('protocol_transition') else 'medium','asset':dom,
+                        'description':f"{x.get('account','?')} şu hedeflere yetkilendirilmiş: {', '.join(x.get('targets',[])[:6])}."+(' Protokol geçişi (T2A4D) açık.' if x.get('protocol_transition') else ''),
+                        'impact':'Hesap ele geçirilirse hedef servislere başka kullanıcılar adına erişilebilir; T2A4D açıkken herhangi bir kullanıcı (yönetici dahil) taklit edilebilir.',
+                        'recommendation':'Gereksiz delegasyonu kaldırın; protokol geçişi yerine kaynak-tabanlı kısıtlı yetkilendirme kullanın; hassas hesapları Protected Users’a ekleyin.',
+                        'evidence':'AD_ASSESSMENT.json'})
+            if ad.get('rbcd_configured'):
+                observations.append({'title':'RBCD yapılandırılmış hesaplar','severity':'medium','asset':dom,
+                    'description':'msDS-AllowedToActOnBehalfOfOtherIdentity ayarlı hesaplar: '+', '.join(list(ad['rbcd_configured'])[:20])+'.',
+                    'impact':'Yanlış yapılandırılmış kaynak-tabanlı kısıtlı yetkilendirme, bir bilgisayar hesabı üzerinden ayrıcalıklı taklide olanak verebilir.',
+                    'recommendation':'RBCD kayıtlarını doğrulayın; beklenmeyen/işlevsiz olanları kaldırın.',
+                    'evidence':'AD_ASSESSMENT.json'})
+    # --- VMware vSphere/vCenter kimliksiz sürüm ifşası ---
+    for path in sorted((root/'targets').glob('*/raw/vmware_*.json')) if (root/'targets').exists() else []:
+        try:
+            item=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError,TypeError):
+            continue
+        if not isinstance(item,dict) or not (item.get('version') or item.get('product')):
+            continue
+        observations.append({'title':'VMware vSphere / vCenter kimliksiz sürüm ifşası','severity':'medium','asset':str(item.get('target','')),
+            'description':f"{item.get('product','VMware vSphere')} sürüm {item.get('version','?')}"+(f" build {item.get('build')}" if item.get('build') else '')+" — vSphere Web Services SDK, kimlik doğrulamadan sürüm/derleme bilgisini açıkladı.",
+            'impact':'Kesin derleme numarası, o sürüme özgü bilinen CVE’lerin (ör. vCenter RCE zincirleri) hedeflenmesini kolaylaştırır.',
+            'recommendation':'vCenter/ESXi’yi desteklenen ve yamalı sürüme güncelleyin; yönetim arayüzlerine erişimi yönetim ağıyla sınırlayın.',
+            'evidence':str(path.relative_to(root))})
     # --- Opt-in sqlmap (yetkili SQL enjeksiyon testi) sonuçları ---
     for path in sorted((root/'targets').glob('*/raw/sqlmap_result_*.json')) if (root/'targets').exists() else []:
         try:

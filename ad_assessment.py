@@ -534,6 +534,121 @@ def _gpo_ou(connection, base):
     return out
 
 
+# --- Risky AD: dangerous ACLs on privileged accounts, delegation, RBCD (BloodHound-lite) ---
+_DANGER_MASK = 0x10000000 | 0x40000000 | 0x00040000 | 0x00080000  # GenericAll/Write, WriteDacl/Owner
+_RESET_PW = "00299570-246d-11d0-a768-00aa006e0529"
+_DCSYNC = {"1131f6aa-9c07-11d1-f79f-00c04fc2dcd2", "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"}
+_KEYCRED = "5b47d60f-6090-40b2-9f37-2a4de88f3063"   # msDS-KeyCredentialLink (shadow creds)
+
+
+def _safe_sids(domain_sid):
+    """Principals that legitimately hold rights over privileged accounts."""
+    safe = {"S-1-5-18", "S-1-5-10", "S-1-3-0", "S-1-5-9", "S-1-5-32-544", "S-1-5-32-548"}
+    ds = str(domain_sid or "")
+    if ds.upper().startswith("S-1-"):
+        for rid in (512, 516, 518, 519, 521, 526, 527, 498):
+            safe.add(f"{ds}-{rid}")
+    return safe
+
+
+def _sd_dacl_control():
+    try:
+        from ldap3.protocol.microsoft import security_descriptor_control
+        return security_descriptor_control(sdflags=0x04)
+    except Exception:
+        return None
+
+
+def _account_acl_risks(connection, dn, base, safe, sd_control, cache):
+    """Non-safe principals with takeover/reset/DCSync/shadow-cred rights over `dn`."""
+    try:
+        from ldap3 import BASE
+        connection.search(dn, "(objectClass=*)", search_scope=BASE,
+                          attributes=["nTSecurityDescriptor"], controls=sd_control,
+                          size_limit=1, time_limit=8)
+    except Exception:
+        return []
+    if not connection.entries:
+        return []
+    try:
+        sd = connection.entries[0]["nTSecurityDescriptor"].raw_values[0]
+    except Exception:
+        return []
+    out = []
+    for ace in _parse_dacl(sd):
+        sid = ace["sid"]
+        if sid in safe or sid.endswith("-500"):
+            continue
+        mask, guid = ace["mask"], (ace["guid"] or "").lower()
+        if mask & _DANGER_MASK:
+            right = "Tam kontrol (GenericAll/Write · WriteDacl/Owner)"
+        elif (mask & 0x100) and guid == _RESET_PW:
+            right = "Parola sıfırlama hakkı"
+        elif (mask & 0x100) and guid in _DCSYNC:
+            right = "DCSync (dizin replikasyonu)"
+        elif (mask & 0x20) and guid == _KEYCRED:
+            right = "Shadow credentials (msDS-KeyCredentialLink yazma)"
+        elif (mask & 0x20) and not guid:
+            right = "Tüm özelliklere yazma"
+        else:
+            continue
+        name = cache.get(sid)
+        if name is None:
+            resolved = _resolve_sid(connection, base, sid)
+            name = (resolved or {}).get("name") or sid
+            cache[sid] = name
+        out.append({"principal": name, "sid": sid, "right": right})
+    return out
+
+
+def _risky_ad(connection, base, domain_sid):
+    """Dangerous ACLs on privileged accounts, constrained delegation and RBCD — the passive
+    equivalent of BloodHound's high-value edges. All read-only LDAP."""
+    out = {}
+    safe = _safe_sids(domain_sid)
+    sd_control = _sd_dacl_control()
+    cache = {}
+    priv = {}
+    try:
+        connection.search(base, "(&(objectClass=group)(sAMAccountName=Domain Admins))",
+                          attributes=["member"], size_limit=1, time_limit=10)
+        if connection.entries:
+            for dn in _vals(connection.entries[0], "member"):
+                priv[dn] = _cn(dn)
+    except Exception:
+        pass
+    acl_risks = []
+    for dn, name in list(priv.items())[:40]:
+        for risk in _account_acl_risks(connection, dn, base, safe, sd_control, cache):
+            acl_risks.append({"account": name, **risk})
+    if acl_risks:
+        out["privileged_acl_risks"] = acl_risks[:100]
+    deleg = []
+    try:
+        connection.search(base, "(msDS-AllowedToDelegateTo=*)",
+                          attributes=["sAMAccountName", "msDS-AllowedToDelegateTo", "userAccountControl"],
+                          size_limit=500, time_limit=15)
+        for e in connection.entries:
+            uac = _as_int(e, "userAccountControl") or 0
+            deleg.append({"account": _val(e, "sAMAccountName"),
+                          "protocol_transition": bool(uac & 0x1000000),
+                          "targets": _vals(e, "msDS-AllowedToDelegateTo")[:20]})
+    except Exception:
+        pass
+    if deleg:
+        out["constrained_delegation"] = deleg[:100]
+    rbcd = []
+    try:
+        connection.search(base, "(msDS-AllowedToActOnBehalfOfOtherIdentity=*)",
+                          attributes=["sAMAccountName"], size_limit=500, time_limit=15)
+        rbcd = sorted(_val(e, "sAMAccountName") for e in connection.entries if _val(e, "sAMAccountName"))
+    except Exception:
+        pass
+    if rbcd:
+        out["rbcd_configured"] = rbcd[:100]
+    return out
+
+
 def _cleartext_bind(dc, pinned_ip, username, domain, password):
     """Does the DC accept a SIMPLE bind over cleartext LDAP/389 (no TLS)? If yes, LDAP
     signing/channel-binding is not enforced -> credentials cross the wire in the clear and
@@ -679,6 +794,7 @@ def _collect(connection, base, domain, dc, username=""):
     deep = _deep_enum(connection, base)
     adcs = _adcs(connection, root_data.get("configurationNamingContext"), domain_sid)
     gpo_ou = _gpo_ou(connection, base)
+    risky = _risky_ad(connection, base, domain_sid)
     result = {"status": "ok", "domain": domain, "dc": dc, "root_dse": root_data,
               "inventory": outcome,
               "user_names": samples.get("users", []), "group_names": samples.get("groups", []),
@@ -695,6 +811,7 @@ def _collect(connection, base, domain, dc, username=""):
     if adcs:
         result["adcs"] = adcs
     result.update({k: v for k, v in gpo_ou.items() if v})
+    result.update({k: v for k, v in risky.items() if v})
     return result
 
 

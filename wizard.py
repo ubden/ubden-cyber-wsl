@@ -42,6 +42,7 @@ from rootdse_probe import discover as discover_rootdse
 import credential_probes
 import discovery_probes
 import netbios_probe
+import vmware_probe
 import web_identify
 import optional_tools
 from environment_doctor import inspect as inspect_environment
@@ -1126,6 +1127,10 @@ def run_probe_suite(target, meta, root, raw, events, assets, discovered_ports,
         except Exception as exc:
             events.append({'step':'discovery','status':'warn','detail':str(exc)[:200]})
         web_identify.run(assets,discovered_ports,raw,events)
+        try:
+            vmware_probe.run(assets,discovered_ports,raw,events)
+        except Exception as exc:
+            events.append({'step':'vmware_version','status':'warn','detail':str(exc)[:200]})
         probe_snmp(target,assets,raw,events,meta['max_rate'])
         discover_rootdse(assets,discovered_ports,raw,events)
         network_extras(assets,discovered_ports,raw,events,command)
