@@ -205,6 +205,11 @@
       h+=notice(`SYSVOL / Group Policy Preferences: ${sv.cpassword_count} adet cpassword bulundu ve kamuya açık anahtarla çözüldü — KRİTİK. SYSVOL'u okuyabilen her etki alanı kullanıcısı bu parolaları elde edebilir.`);
       h+=`<div class="table-wrap" style="margin-bottom:12px"><table class="data-table"><thead><tr><th>Dosya</th><th>Kullanıcı</th><th>Yol</th></tr></thead><tbody>${arr(sv.findings).slice(0,30).map(f=>`<tr><td>${esc(f.file_type||'?')}</td><td class="mono">${txt(f.username||'?')}</td><td class="mono">${txt(f.path||'')}</td></tr>`).join('')||'<tr><td colspan="3" class="muted">—</td></tr>'}</tbody></table></div>`;
     }
+    const adminG=ad.admin_like_groups||{},gpos=arr(ad.gpos),dist=arr(ad.ou_user_distribution);
+    if(Object.keys(adminG).length){
+      h+=`<div class="section-head"><h3>Yönetici-benzeri özel gruplar</h3><small>${Object.keys(adminG).length}</small></div>${Object.entries(adminG).map(([g,info])=>`<details class="folder-group name-group"><summary>${icon('lock')}${esc(g)}<small>${arr(info.members).length} üye</small></summary><div class="chip-pad">${info.description?`<p class="small muted">${esc(info.description)}</p>`:''}${chips(info.members)}</div></details>`).join('')}`;
+    }
+    if(gpos.length||dist.length)h+=`<div class="grid cols-2" style="margin:12px 0">${gpos.length?`<div class="card"><div class="card-header"><h3>Grup İlkeleri (GPO)</h3><small>${gpos.length}</small></div><div class="table-wrap"><table class="data-table"><thead><tr><th>GPO</th><th>Bağlı yer</th></tr></thead><tbody>${gpos.slice(0,50).map(g=>`<tr><td>${esc(g.name||g.guid||'?')}</td><td class="small">${arr(g.links).length?arr(g.links).map(l=>esc(String(l).split(',')[0])).join(', '):'<span class="muted">bağlı değil</span>'}</td></tr>`).join('')}</tbody></table></div></div>`:''}${dist.length?`<div class="card"><div class="card-header"><h3>OU kullanıcı dağılımı</h3></div>${barLines(dist.slice(0,15).map(x=>[String(x.ou||'').split(',')[0].replace(/^OU=/,''),x.users]))}</div>`:''}</div>`;
     return h;}
 
   function surfaceWeb(){const dsx=arr(ds('DEVICE_INVENTORY').devices).filter(d=>arr(d.ports).some(p=>[80,81,443,8080,8443,5000,5001].includes(Number(p.port))));

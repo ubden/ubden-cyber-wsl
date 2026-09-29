@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = 'ubden/ubden-cyber-wsl'
-$tag = 'v5.0.0-wsl.36'
+$tag = 'v5.0.0-wsl.37'
 $installBase = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber'
 $releaseRoot = Join-Path $installBase $tag
 $entryPoint = Join-Path $releaseRoot 'ubden-win.ps1'

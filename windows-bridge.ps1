@@ -12,24 +12,67 @@ function Emit-Json($Value) {
 
 try {
     if ($Action -eq 'inventory') {
-        $adapters = @(Get-NetAdapter -ErrorAction Stop | ForEach-Object {
-            $nic = $_
+        # Fiziksel NIC ipuclari: Get-NetAdapter bazi gercek karti (gizli/kablosu-cekik/
+        # hyper-visor'e bagli) atlayabilir. WMI'den fiziksel kartlari da toplayip birlestiririz.
+        $physIdx = @{}
+        try {
+            Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
+                Where-Object { $_.PhysicalAdapter -eq $true -and $null -ne $_.InterfaceIndex } |
+                ForEach-Object { $physIdx[[int]$_.InterfaceIndex] = $_ }
+        } catch {}
+        $virtRe = 'Hyper-V|vEthernet|VMware|VirtualBox|Loopback|\bWSL\b|TAP-|Npcap|Bluetooth|Kernel Debug|Wi-Fi Direct|Teredo|ISATAP|WAN Miniport|Microsoft.*Virtual'
+        $seen = @{}
+        function New-AdapterRecord($nic, $isPhysical) {
             $addresses = @(Get-NetIPAddress -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue |
                 Where-Object { $_.IPAddress -and $_.AddressState -eq 'Preferred' } |
                 ForEach-Object { @{ address = $_.IPAddress; prefix = $_.PrefixLength; family = "$($_.AddressFamily)" } })
             $dns = @(Get-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.ServerAddresses } | Where-Object { $_ })
+            $media = "$($nic.PhysicalMediaType)"
+            $desc = "$($nic.InterfaceDescription)"
+            $isVirtual = (-not $isPhysical) -and (($desc -match $virtRe) -or ($media -in @('Unspecified', '')))
             @{
                 name = $nic.Name
                 index = $nic.ifIndex
-                description = $nic.InterfaceDescription
+                description = $desc
                 status = "$($nic.Status)"
                 mac = $nic.MacAddress
+                media_type = $media
+                link_speed = "$($nic.LinkSpeed)"
+                physical = [bool]$isPhysical
+                virtual = [bool]$isVirtual
                 addresses = $addresses
                 dns = $dns
-                is_vpn = ($nic.InterfaceDescription -match 'VPN|TAP|Tunnel|Fortinet|Cato|WireGuard')
+                is_vpn = ($desc -match 'VPN|TAP|Tunnel|Fortinet|Cato|WireGuard')
             }
+        }
+        $adapters = @(Get-NetAdapter -ErrorAction Stop | ForEach-Object {
+            $seen[[int]$_.ifIndex] = $true
+            New-AdapterRecord $_ ($physIdx.ContainsKey([int]$_.ifIndex))
         })
+        # Get-NetAdapter'in gormedigi fiziksel kartlari (gizli/devre-disi) WMI'den ekle.
+        foreach ($idx in $physIdx.Keys) {
+            if ($seen.ContainsKey([int]$idx)) { continue }
+            $w = $physIdx[$idx]
+            $addrs = @(Get-NetIPAddress -InterfaceIndex $idx -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -and $_.AddressState -eq 'Preferred' } |
+                ForEach-Object { @{ address = $_.IPAddress; prefix = $_.PrefixLength; family = "$($_.AddressFamily)" } })
+            $statusMap = @{ 0 = 'Disconnected'; 1 = 'Connecting'; 2 = 'Up'; 7 = 'Disconnected'; 8 = 'Down' }
+            $adapters += @{
+                name = if ($w.NetConnectionID) { "$($w.NetConnectionID)" } else { "$($w.Name)" }
+                index = [int]$idx
+                description = "$($w.Name)"
+                status = if ($null -ne $w.NetConnectionStatus -and $statusMap.ContainsKey([int]$w.NetConnectionStatus)) { $statusMap[[int]$w.NetConnectionStatus] } else { 'Unknown' }
+                mac = "$($w.MACAddress)"
+                media_type = 'Physical (WMI)'
+                link_speed = "$($w.Speed)"
+                physical = $true
+                virtual = $false
+                addresses = $addrs
+                dns = @()
+                is_vpn = $false
+            }
+        }
         $routes = @(Get-NetRoute -ErrorAction SilentlyContinue |
             Where-Object { $_.DestinationPrefix -eq '0.0.0.0/0' -or $_.DestinationPrefix -eq '::/0' } |
             ForEach-Object { @{ destination = $_.DestinationPrefix; gateway = $_.NextHop;

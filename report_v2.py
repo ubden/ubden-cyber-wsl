@@ -510,6 +510,23 @@ def ad_story(root,st,width):
         for hit in (sv.get('findings') or [])[:20]:
             if isinstance(hit,dict):
                 result.append(P(f"  {hit.get('file_type','?')} · kullanıcı: {hit.get('username','?')} · {hit.get('path','')}",st['SmallX'],limit=1200))
+    # Yönetici-benzeri özel gruplar, GPO bağlantıları, OU kullanıcı dağılımı.
+    admin_g=ad.get('admin_like_groups')
+    if isinstance(admin_g,dict) and admin_g:
+        result.append(P('Yönetici-benzeri özel gruplar',st['SubX']))
+        for g,info in admin_g.items():
+            if isinstance(info,dict):
+                result.append(P(f"{g} ({len(info.get('members',[]))}): "+', '.join(info.get('members',[])[:40]),st['SmallX'],limit=1500))
+    gpos=ad.get('gpos')
+    if isinstance(gpos,list) and gpos:
+        result.append(P('Grup İlkeleri (GPO)',st['SubX']))
+        for g in gpos[:40]:
+            if isinstance(g,dict):
+                links=', '.join(str(x).split(',')[0] for x in (g.get('links') or [])[:4]) or 'bağlı değil'
+                result.append(P(f"{g.get('name') or g.get('guid')} → {links}",st['SmallX'],limit=1500))
+    dist=ad.get('ou_user_distribution')
+    if isinstance(dist,list) and dist:
+        result.append(P('OU kullanıcı dağılımı: '+', '.join(f"{str(x.get('ou','')).split(',')[0]}={x.get('users')}" for x in dist[:20] if isinstance(x,dict)),st['SmallX'],limit=1500))
     if ad.get('forest') or ad.get('domain_mode'):
         result.append(P(f"Orman: {ad.get('forest','?')} · Orman modu: {ad.get('forest_mode','?')} · Alan modu: {ad.get('domain_mode','?')}",st['SmallX']))
     if ad.get('dc_dns_records'):

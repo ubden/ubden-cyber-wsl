@@ -357,6 +357,45 @@ class AdAssessmentReadsTests(unittest.TestCase):
         cpw = base64.b64encode(enc.update(data) + enc.finalize()).decode()
         self.assertEqual(sysvol_probe.decrypt_cpassword(cpw), plain)
 
+    def test_gpo_ou_and_admin_groups(self):
+        import types, sys
+        from unittest.mock import patch
+        import ad_assessment
+
+        class E:
+            def __init__(self, d): self.d = d
+            def __contains__(self, k): return k in self.d
+            def __getitem__(self, k):
+                v = self.d.get(k)
+                return types.SimpleNamespace(value=v, values=v if isinstance(v, list) else ([v] if k in self.d else []))
+
+        guid = '{12345678-1234-1234-1234-123456789012}'
+        ou_dn = 'OU=Users,DC=x'
+        gpo = E({'cn': guid, 'displayName': 'Local Admin Policy'})
+        ou = E({'ou': 'Users', 'distinguishedName': ou_dn,
+                'gPLink': f'[LDAP://CN={guid},CN=Policies,CN=System,DC=x;0]'})
+        grp = E({'sAMAccountName': 'LocalAdmin_Policy', 'description': 'yerel yönetici',
+                 'member': ['CN=elektra,CN=Users,DC=x', 'CN=brasco,DC=x']})
+
+        class Conn:
+            entries = []
+            def search(self, base, filt, search_scope=None, **k):
+                if 'groupPolicyContainer' in filt: self.entries = [gpo]
+                elif 'organizationalUnit' in filt: self.entries = [ou]
+                elif 'objectClass=user' in filt and base == ou_dn:
+                    self.entries = [E({'cn': 'a'}), E({'cn': 'b'}), E({'cn': 'c'})]
+                elif filt == '(objectClass=group)': self.entries = [grp]
+                else: self.entries = []
+                return True
+
+        with patch.dict(sys.modules, {'ldap3': types.SimpleNamespace(SUBTREE='s', LEVEL='l', BASE=0)}):
+            out = ad_assessment._gpo_ou(Conn(), 'DC=x')
+        self.assertEqual(out['gpos'][0]['name'], 'Local Admin Policy')
+        self.assertIn(ou_dn, out['gpos'][0]['links'])
+        self.assertEqual(out['ou_user_distribution'][0]['users'], 3)
+        self.assertIn('LocalAdmin_Policy', out['admin_like_groups'])
+        self.assertIn('elektra', out['admin_like_groups']['LocalAdmin_Policy']['members'])
+
     def test_falls_back_to_insecure_ldaps_when_strict_fails(self):
         import types
         from unittest.mock import patch

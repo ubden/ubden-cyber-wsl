@@ -329,15 +329,15 @@ async function loadAdapters(){
  try{const r=await fetch("/api/adapters?t="+T);d=await r.json();}catch(e){}
  renderHost(d);
  const box=document.getElementById("adapters");box.innerHTML="";
- const ad=(d.adapters||[]).filter(a=>(a.addresses||[]).length);
- if(!ad.length){box.innerHTML="<div class='hint'>Adresli adaptör bulunamadı (köprü yoksa tarama yine çalışır).</div>";return;}
+ const ad=(d.adapters||[]).filter(a=>(a.addresses||[]).length || a.physical);
+ if(!ad.length){box.innerHTML="<div class='hint'>Adaptör bulunamadı (köprü yoksa tarama yine çalışır).</div>";return;}
  ad.forEach(a=>{const ips=(a.addresses||[]).map(x=>x.address);
- const v4=ips.filter(x=>x.indexOf(":")<0).length;
- const kind=a.is_vpn?"VPN":"fiziksel";
+ const hasIp=ips.length>0;
+ const kind=a.is_vpn?"VPN":(a.virtual?"sanal":(a.physical?"fiziksel":"diğer"));
  box.insertAdjacentHTML("beforeend",
- `<label class="adp"><input type="checkbox" class="adpk" value="${a.index}" ${/Up/i.test(a.status)?"checked":""}>`+
+ `<label class="adp"><input type="checkbox" class="adpk" value="${a.index}" ${hasIp&&/Up/i.test(a.status)?"checked":""} ${hasIp?"":"disabled"}>`+
  `<span class="an">${esc(a.name)}</span>`+
- `<span class="ai">${esc(ips.slice(0,3).join(", ")||a.status)}</span>`+
+ `<span class="ai">${esc(ips.slice(0,3).join(", ")||(a.status+(a.description?" · "+a.description:"")))}</span>`+
  `<span class="ac">${ips.length} IP</span> <span class="kind">${kind}</span></label>`);});
 }
 function renderHost(d){const g=document.getElementById("hostgrid");

@@ -8,6 +8,7 @@ impact before any becomes verified.
 """
 from __future__ import annotations
 
+import re
 import ssl
 import struct
 import uuid
@@ -448,6 +449,91 @@ def _adcs(connection, config_nc, domain_sid):
     return out
 
 
+def _resolve_sid(connection, base, sid):
+    """Resolve a SID string to {name, type} (best-effort)."""
+    if not sid:
+        return None
+    try:
+        from ldap3 import SUBTREE
+        connection.search(base, f"(objectSid={sid})", search_scope=SUBTREE,
+                          attributes=["sAMAccountName", "cn", "objectClass"],
+                          size_limit=1, time_limit=8)
+        if connection.entries:
+            e = connection.entries[0]
+            classes = _vals(e, "objectClass")
+            kind = "group" if "group" in classes else ("user" if "user" in classes else (classes[-1] if classes else ""))
+            return {"sid": sid, "name": _val(e, "sAMAccountName") or _val(e, "cn"), "type": kind}
+    except Exception:
+        pass
+    return None
+
+
+def _gpo_ou(connection, base):
+    """GPOs + where they are linked (gPLink), OU user distribution, and admin-like custom
+    groups (e.g. a 'Local Admin' group pushed by policy). Read-only LDAP a normal user runs."""
+    try:
+        from ldap3 import SUBTREE, LEVEL
+    except Exception:
+        return {}
+    out = {}
+    gpos = {}
+    try:
+        connection.search(f"CN=Policies,CN=System,{base}", "(objectClass=groupPolicyContainer)",
+                          search_scope=SUBTREE, attributes=["cn", "displayName"],
+                          size_limit=500, time_limit=15)
+        for e in connection.entries:
+            guid = _val(e, "cn")
+            if guid:
+                gpos[guid.lower()] = {"guid": guid, "name": _val(e, "displayName"), "links": []}
+    except Exception:
+        pass
+    ous = []
+    try:
+        connection.search(base, "(|(objectClass=organizationalUnit)(objectClass=domainDNS))",
+                          search_scope=SUBTREE, attributes=["ou", "gPLink", "distinguishedName"],
+                          size_limit=2000, time_limit=20)
+        for e in connection.entries:
+            dn = _val(e, "distinguishedName")
+            for guid in re.findall(r"\{[0-9A-Fa-f-]{36}\}", _val(e, "gPLink") or ""):
+                g = gpos.get(guid.lower())
+                if g and dn not in g["links"]:
+                    g["links"].append(dn)
+            if _val(e, "ou"):
+                ous.append(dn)
+    except Exception:
+        pass
+    if gpos:
+        out["gpos"] = sorted(gpos.values(), key=lambda x: (x["name"] or x["guid"]).lower())[:300]
+    dist = []
+    for dn in ous[:80]:
+        try:
+            connection.search(dn, "(&(objectCategory=person)(objectClass=user))",
+                              search_scope=LEVEL, attributes=["cn"], size_limit=2000, time_limit=10)
+            n = len(connection.entries)
+            if n:
+                dist.append({"ou": dn, "users": n})
+        except Exception:
+            continue
+    if dist:
+        out["ou_user_distribution"] = sorted(dist, key=lambda x: -x["users"])[:80]
+    admin_groups = {}
+    try:
+        connection.search(base, "(objectClass=group)", attributes=["sAMAccountName", "member", "description"],
+                          size_limit=3000, time_limit=25)
+        for e in connection.entries:
+            name = _val(e, "sAMAccountName")
+            if not name or not re.search(r"admin|yönetici|localadmin|privile|ayrıcalık|yetkili", name, re.I):
+                continue
+            members = [_cn(dn) for dn in _vals(e, "member")]
+            if members:
+                admin_groups[name] = {"members": sorted(members)[:100], "description": _val(e, "description")}
+    except Exception:
+        pass
+    if admin_groups:
+        out["admin_like_groups"] = admin_groups
+    return out
+
+
 def _cleartext_bind(dc, pinned_ip, username, domain, password):
     """Does the DC accept a SIMPLE bind over cleartext LDAP/389 (no TLS)? If yes, LDAP
     signing/channel-binding is not enforced -> credentials cross the wire in the clear and
@@ -592,6 +678,7 @@ def _collect(connection, base, domain, dc, username=""):
     membership = _member_of(connection, base, username)
     deep = _deep_enum(connection, base)
     adcs = _adcs(connection, root_data.get("configurationNamingContext"), domain_sid)
+    gpo_ou = _gpo_ou(connection, base)
     result = {"status": "ok", "domain": domain, "dc": dc, "root_dse": root_data,
               "inventory": outcome,
               "user_names": samples.get("users", []), "group_names": samples.get("groups", []),
@@ -607,6 +694,7 @@ def _collect(connection, base, domain, dc, username=""):
     result.update({k: v for k, v in deep.items() if v})
     if adcs:
         result["adcs"] = adcs
+    result.update({k: v for k, v in gpo_ou.items() if v})
     return result
 
 
