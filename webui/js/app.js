@@ -157,8 +157,9 @@
       `${esc(d.confidence_pct||0)}% <div class="progress"><span style="width:${Math.min(100,Number(d.confidence_pct)||0)}%"></span></div>`,
       `<button class="btn btn-small" data-action="asset" data-ip="${esc(d.ip)}">Detay</button>`];});
     const named=devices.filter(d=>assetName(d)).length,unknown=inv.unknown_count??devices.filter(d=>d.category==='Bilinmiyor').length;
+    const adJoined=inv.ad_joined_count??devices.filter(d=>d.ad_joined).length;
     return intro('Cihazlar & servisler','Sınıflandırma ve rol adayları otomatik işaretlerdir; üretici ve açık port tek başına zafiyet kanıtı değildir.',
-      `<span class="meta-chip">${list.length} / ${devices.length} cihaz</span><span class="meta-chip">${named} adlandırıldı</span>${unknown?`<span class="meta-chip warn">${unknown} sınıflandırılamadı</span>`:''}`)+
+      `<span class="meta-chip">${list.length} / ${devices.length} cihaz</span><span class="meta-chip">${named} adlandırıldı</span>${adJoined?`<span class="meta-chip">${adJoined} AD üyesi</span>`:''}${unknown?`<span class="meta-chip warn">${unknown} sınıflandırılamadı</span>`:''}`)+
       gatewayCard()+
       `<div class="grid cols-3" style="margin:16px 0"><div class="card"><h3>Hedef ağlar</h3>${barLines(Object.entries(devices.reduce((a,d)=>(a[subnet(d.ip)]=(a[subnet(d.ip)]||0)+1,a),{})))}</div>
       <div class="card"><h3>Kategori dağılımı</h3>${donut(Object.entries(inv.categories||{}),'cihaz')}</div>
@@ -183,7 +184,19 @@
       ((arr(ad.user_names).length||arr(ad.group_names).length||arr(ad.computer_names).length)?
         `<div class="section-head"><h3>Dizin adları</h3><span class="sub">Üstteki aramayı bu listelerde de kullanabilirsiniz</span></div>
         ${nameList('Kullanıcı adları',ad.user_names,'kullanıcı')}${nameList('Grup adları',ad.group_names,'grup')}${nameList('Bilgisayar adları',ad.computer_names,'bilgisayar')}`:'')+
+      adDeep(ad)+
       `<div class="section-head"><h3>İlgili kaynak</h3></div>${linkFile('AD_ASSESSMENT.json')} · ${state.model.manifest.files.filter(f=>f.name==='ad_rootdse_summary.json').map(f=>linkFile(f.path)).join(' · ')||'<span class="muted">RootDSE özeti yok</span>'}`;}
+  function adDeep(ad){const UAC={disabled:'Devre dışı',passwd_notreqd:'Parola gerekmiyor',reversible_encryption:'Tersinir şifreleme',password_never_expires:'Parolası hiç bitmiyor',unconstrained_delegation:'Kısıtlanmamış yetkilendirme',asrep_roastable:'AS-REP roast',constrained_delegation_proto:'Protokol geçişli yetkilendirme'};
+    const risky=ad.risky_accounts||{},groups=ad.sensitive_groups||{},kerb=arr(ad.kerberoastable),asrep=arr(ad.asrep_roastable),osx=ad.computer_os_summary||{},stale=arr(ad.stale_computers);
+    const rk=Object.entries(risky).filter(([k,v])=>arr(v).length),gk=Object.entries(groups).filter(([k,v])=>arr(v).length);
+    if(!(rk.length||gk.length||kerb.length||asrep.length||Object.keys(osx).length||stale.length||ad.ldap_cleartext_bind===true))return '';
+    let h=`<div class="section-head"><h3>Derin AD analizi</h3><span class="sub">Taslak bulgular · analist doğrulaması gerekir</span></div>`;
+    if(ad.ldap_cleartext_bind===true)h+=notice('LDAP imzalama/kanal bağlama zorlanmıyor: 389 üzerinde şifresiz SIMPLE bağlanma kabul edildi (kimlik ağda açık; NTLM relay-to-LDAP riski).');
+    if(kerb.length||asrep.length)h+=`<div class="grid cols-2" style="margin-bottom:12px">${kerb.length?`<div class="card"><div class="card-header"><h3>Kerberoast edilebilir</h3><small>${kerb.length} SPN hesabı</small></div>${chips(kerb.map(k=>String(k.account||'?')+(k.admin?' ★':'')))}</div>`:''}${asrep.length?`<div class="card"><div class="card-header"><h3>AS-REP roast edilebilir</h3><small>${asrep.length} hesap</small></div>${chips(asrep)}</div>`:''}</div>`;
+    if(rk.length)h+=`<div class="card" style="margin-bottom:12px"><div class="card-header"><h3>Hesap risk bayrakları</h3><small>userAccountControl</small></div>${rk.map(([k,v])=>`<div class="uac-row"><span class="badge ${/notreqd|reversible|unconstrained|asrep/.test(k)?'high':'medium'}">${esc(UAC[k]||k)} · ${arr(v).length}</span><div class="chip-cloud">${arr(v).slice(0,60).map(x=>`<span class="name-chip mono">${txt(x)}</span>`).join('')}</div></div>`).join('')}</div>`;
+    if(gk.length)h+=`${gk.map(([g,m])=>`<details class="folder-group name-group"><summary>${icon('lock')}${esc(g)}<small>${arr(m).length} üye</small></summary><div class="chip-pad">${chips(m)}</div></details>`).join('')}`;
+    if(Object.keys(osx).length||stale.length)h+=`<div class="grid cols-2" style="margin:12px 0">${Object.keys(osx).length?`<div class="card"><div class="card-header"><h3>Bilgisayar OS dağılımı</h3><small>AD kaydı</small></div>${barLines(Object.entries(osx).sort((a,b)=>b[1]-a[1]),8)}</div>`:''}${stale.length?`<div class="card"><div class="card-header"><h3>Bayat bilgisayar hesapları</h3><small>90+ gün · ${stale.length}</small></div>${chips(stale)}</div>`:''}</div>`;
+    return h;}
 
   function surfaceWeb(){const dsx=arr(ds('DEVICE_INVENTORY').devices).filter(d=>arr(d.ports).some(p=>[80,81,443,8080,8443,5000,5001].includes(Number(p.port))));
     return notice('Web veya yönetim portu görülmesi, kimlik doğrulama ya da güvenlik açığı doğrulaması değildir.',true)+

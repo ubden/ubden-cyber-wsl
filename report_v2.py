@@ -457,6 +457,42 @@ def ad_story(root,st,width):
         da=ad['domain_admins']
         result.append(P(f"{da.get('group','Domain Admins')} üyeleri ({da.get('count','?')}): "
                         +', '.join(da.get('members',[])),st['SmallX'],limit=1500))
+    # Hassas grup üyelikleri (Domain Admins dışı ayrıcalıklı gruplar).
+    groups=ad.get('sensitive_groups')
+    if isinstance(groups,dict) and groups:
+        result.append(P('Hassas grup üyelikleri',st['SubX']))
+        for gname,members in groups.items():
+            if members:
+                result.append(P(f"{gname} ({len(members)}): "+', '.join(members[:60]),st['SmallX'],limit=1500))
+    # Hesap risk bayrakları (userAccountControl), Kerberoast ve AS-REP.
+    _UAC_LABELS={'disabled':'Devre dışı','passwd_notreqd':'Parola gerekmiyor',
+        'reversible_encryption':'Tersinir şifreleme','password_never_expires':'Parolası hiç bitmiyor',
+        'unconstrained_delegation':'Kısıtlanmamış yetkilendirme','asrep_roastable':'AS-REP roast edilebilir',
+        'constrained_delegation_proto':'Protokol geçişli yetkilendirme'}
+    risky=ad.get('risky_accounts')
+    if isinstance(risky,dict) and risky:
+        result.append(P('Hesap risk bayrakları (userAccountControl)',st['SubX']))
+        for key,names in risky.items():
+            if names:
+                result.append(P(f"{_UAC_LABELS.get(key,key)} ({len(names)}): "
+                                +', '.join(names[:80])+(f" (+{len(names)-80})" if len(names)>80 else ''),st['SmallX'],limit=2000))
+    kerb=ad.get('kerberoastable')
+    if isinstance(kerb,list) and kerb:
+        result.append(P(f"Kerberoast edilebilir hesaplar ({len(kerb)}): "
+                        +', '.join((str(k.get('account','?'))+('*' if isinstance(k,dict) and k.get('admin') else '')) for k in kerb[:80]),
+                        st['SmallX'],limit=2000))
+    asrep=ad.get('asrep_roastable')
+    if isinstance(asrep,list) and asrep:
+        result.append(P(f"AS-REP roast edilebilir ({len(asrep)}): "+', '.join(asrep[:80]),st['SmallX'],limit=2000))
+    if ad.get('ldap_cleartext_bind') is True:
+        result.append(P('LDAP imzalama/kanal bağlama zorlanmıyor: 389 üzerinde şifresiz SIMPLE bağlanma kabul edildi '
+                        '(kimlik bilgisi ağda açık; NTLM relay-to-LDAP riski).',st['SmallX']))
+    osx=ad.get('computer_os_summary')
+    if isinstance(osx,dict) and osx:
+        result.append(P('Bilgisayar işletim sistemi dağılımı: '+', '.join(f"{k}: {v}" for k,v in osx.items()),st['SmallX'],limit=1500))
+    stale=ad.get('stale_computers')
+    if isinstance(stale,list) and stale:
+        result.append(P(f"90+ gün oturum açmamış bilgisayarlar ({len(stale)}): "+', '.join(stale[:60]),st['SmallX'],limit=1500))
     if ad.get('forest') or ad.get('domain_mode'):
         result.append(P(f"Orman: {ad.get('forest','?')} · Orman modu: {ad.get('forest_mode','?')} · Alan modu: {ad.get('domain_mode','?')}",st['SmallX']))
     if ad.get('dc_dns_records'):
@@ -783,6 +819,60 @@ def read_data(root):
                     'description':f"{admins.get('group','Domain Admins')} grubunda {count} üye görüldü. Ayrıcalıklı hesap sayısının fazla olması saldırı yüzeyini büyütür.",
                     'impact':'Herhangi bir domain admin hesabının ele geçirilmesi tüm etki alanının ele geçirilmesi anlamına gelir.',
                     'recommendation':'Domain Admins üyeliğini en aza indirin; ayrıcalıklı erişim için katmanlı model ve JIT/PAM yaklaşımını uygulayın.',
+                    'evidence':'AD_ASSESSMENT.json'})
+            risky=ad.get('risky_accounts') or {}
+            def _names_line(items,cap=40):
+                items=list(items or [])
+                return ', '.join(items[:cap])+(f" (+{len(items)-cap})" if len(items)>cap else '')
+            if isinstance(risky,dict):
+                if risky.get('asrep_roastable'):
+                    n=risky['asrep_roastable']
+                    observations.append({'title':'AS-REP roast edilebilir hesaplar (ön-kimlik doğrulama kapalı)','severity':'high','asset':dom,
+                        'description':f"{len(n)} hesapta Kerberos ön-kimlik doğrulaması kapalı (DONT_REQ_PREAUTH): {_names_line(n)}.",
+                        'impact':'Saldırgan kimlik doğrulamadan bu hesaplar için AS-REP alıp parolayı çevrimdışı kırabilir.',
+                        'recommendation':'Bu hesaplarda "Kerberos ön kimlik doğrulaması gerektirme" seçeneğini kapatın; güçlü parola zorunlu kılın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+                if risky.get('passwd_notreqd'):
+                    n=risky['passwd_notreqd']
+                    observations.append({'title':'Parola gerektirmeyen hesaplar (PASSWD_NOTREQD)','severity':'high','asset':dom,
+                        'description':f"{len(n)} hesapta parola gerekmiyor bayrağı açık: {_names_line(n)}.",
+                        'impact':'Bu hesaplar boş/zayıf parolayla ele geçirilebilir.',
+                        'recommendation':'PASSWD_NOTREQD bayrağını kaldırın ve parola politikasını uygulayın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+                if risky.get('reversible_encryption'):
+                    n=risky['reversible_encryption']
+                    observations.append({'title':'Tersinir şifreleme açık hesaplar','severity':'high','asset':dom,
+                        'description':f"{len(n)} hesapta tersinir şifreleme (ENCRYPTED_TEXT_PWD_ALLOWED) açık: {_names_line(n)}.",
+                        'impact':'Parolalar geri döndürülebilir biçimde saklanır; DC ele geçirilirse düz metin elde edilir.',
+                        'recommendation':'Tersinir şifrelemeyi kapatın ve etkilenen hesapların parolalarını sıfırlayın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+                if risky.get('unconstrained_delegation'):
+                    n=risky['unconstrained_delegation']
+                    observations.append({'title':'Kısıtlanmamış yetkilendirme (unconstrained delegation)','severity':'high','asset':dom,
+                        'description':f"{len(n)} hesap/kaynakta kısıtlanmamış Kerberos yetkilendirmesi açık: {_names_line(n)}.",
+                        'impact':'Bu sistem ele geçirilirse ona kimlik doğrulayan ayrıcalıklı hesapların TGT biletleri toplanabilir.',
+                        'recommendation':'Kısıtlanmamış yetkilendirmeyi kaldırın; gerekiyorsa kaynak-tabanlı kısıtlı yetkilendirmeye geçin.',
+                        'evidence':'AD_ASSESSMENT.json'})
+                if risky.get('password_never_expires'):
+                    n=risky['password_never_expires']
+                    observations.append({'title':'Parolası hiç bitmeyen hesaplar','severity':'medium','asset':dom,
+                        'description':f"{len(n)} hesapta parola hiç bitmiyor (DONT_EXPIRE_PASSWORD): {_names_line(n)}.",
+                        'impact':'Kalıcı parolalar sızıntı ve çevrimdışı kırma açısından uzun vadeli risk oluşturur; özellikle servis/ayrıcalıklı hesaplarda kritiktir.',
+                        'recommendation':'Servis hesapları için gMSA kullanın; diğer hesaplarda parola yaşlanmasını uygulayın.',
+                        'evidence':'AD_ASSESSMENT.json'})
+            kerb=ad.get('kerberoastable') or []
+            if isinstance(kerb,list) and kerb:
+                admins_spn=[k.get('account') for k in kerb if isinstance(k,dict) and k.get('admin')]
+                observations.append({'title':'Kerberoast edilebilir servis hesapları (SPN)','severity':'high' if admins_spn else 'medium','asset':dom,
+                    'description':f"SPN tanımlı {len(kerb)} kullanıcı hesabı bulundu"+(f"; ayrıcalıklı olanlar: {', '.join(str(x) for x in admins_spn)}" if admins_spn else '')+".",
+                    'impact':'Saldırgan bu hesaplar için servis biletleri alıp parolayı çevrimdışı kırabilir; ayrıcalıklı SPN hesabı doğrudan yükseltme sağlar.',
+                    'recommendation':'Servis hesaplarında uzun/rastgele parola veya gMSA kullanın; gereksiz SPN’leri kaldırın.',
+                    'evidence':'AD_ASSESSMENT.json'})
+            if ad.get('ldap_cleartext_bind') is True:
+                observations.append({'title':'LDAP imzalama / kanal bağlama zorlanmıyor (şifresiz SIMPLE bağlanma kabul edildi)','severity':'high','asset':str(ad.get('dc',dom)),
+                    'description':'DC, 389/TCP üzerinde TLS olmadan SIMPLE LDAP bağlanmayı kabul etti; test hesabı kimlik bilgisi düz metin olarak doğrulandı.',
+                    'impact':'Kimlik bilgileri ağda açık taşınır ve DC NTLM relay-to-LDAP saldırılarına açıktır.',
+                    'recommendation':'LDAP imzalamayı ve LDAP kanal bağlamayı (channel binding) zorunlu kılın; şifresiz LDAP bağlanmayı reddedin (LDAPS/StartTLS).',
                     'evidence':'AD_ASSESSMENT.json'})
     # --- Opt-in sqlmap (yetkili SQL enjeksiyon testi) sonuçları ---
     for path in sorted((root/'targets').glob('*/raw/sqlmap_result_*.json')) if (root/'targets').exists() else []:

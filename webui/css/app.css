@@ -28,3 +28,4 @@
 .gw-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:11px 0;border-bottom:1px solid #1f3c4d}
 .gw-row:last-of-type{border-bottom:0}.gw-row .status-strip{justify-content:flex-end}
 .data-table .dim{color:#6f8b9a;font-style:italic}
+.uac-row{display:flex;gap:10px;align-items:flex-start;margin:9px 0;flex-wrap:wrap}.uac-row .badge{flex:none}.uac-row .chip-cloud{flex:1;min-width:200px}

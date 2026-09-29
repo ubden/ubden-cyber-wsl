@@ -211,14 +211,15 @@ class WslPlatformTests(unittest.TestCase):
             {"extra.example": ["203.0.113.1"]})[4], 256)
         self.assertEqual(wizard.validate_task_address_budget(
             [f"10.0.{index}.0/24" for index in range(4)])[4], 1016)
+        over = wizard.MAX_SCOPED_ADDRESSES // 254 + 2   # enough /24s to exceed the cap
         with self.assertRaises(ValueError):
             wizard.validate_task_address_budget(
-                [f"10.0.{index}.0/24" for index in range(5)])
+                [f"10.{index // 256}.{index % 256}.0/24" for index in range(over)])
         self.assertEqual(wizard.validate_task_address_budget(
             ["2001:db8::/120", "2001:db8::100"])[6], 256)
         with self.assertRaises(ValueError):
             wizard.validate_task_address_budget(
-                [f"2001:db8:{index}::/120" for index in range(5)])
+                [f"2001:db8:{index:x}::/120" for index in range(over)])
         self.assertEqual(wizard.validate_task_address_budget(
             ["192.0.2.0/24"], exclusions=["192.0.2.1/32"])[4], 253)
 

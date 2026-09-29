@@ -48,7 +48,7 @@ from environment_doctor import inspect as inspect_environment
 ROOT = Path(__file__).resolve().parent
 VERSION = "5.0.0"
 BASELINE = ROOT / "templates" / "baseline"
-MAX_SCOPED_ADDRESSES = 1024
+MAX_SCOPED_ADDRESSES = 20480  # ~80 /24; large enterprise scopes (was 1024)
 HOST_RE = re.compile(r"(?=^.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))+", re.I)
 WEB_NEXT_AT = 0.0
 TOOL_PACKAGES = {tool.executable: tool.package for tool in CATALOG}
@@ -1107,7 +1107,7 @@ def run_probe_suite(target, meta, root, raw, events, assets, discovered_ports,
         # NAS, kamera) çoğu top-1000 dışıdır; canlı hostlarda sınırlı ek tarama.
         live_hosts=[ip for ip in assets if discovered_ports.get(ip)]
         if live_hosts and shutil.which('nmap'):
-            platform_ports="541,902,2179,4443,5000,5001,5480,5900,5989,8000,8006,10443,17988,17990,37777,37778"
+            platform_ports="541,902,2179,4443,5000,5001,5480,5900,5988,5989,8000,8006,9443,10443,17988,17990,37777,37778"
             plat_list=raw/'platform_targets.txt'
             plat_list.write_text('\n'.join(live_hosts)+'\n',encoding='ascii')
             plat_xml=raw/'nmap_platform.xml'

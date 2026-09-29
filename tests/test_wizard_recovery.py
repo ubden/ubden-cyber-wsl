@@ -31,7 +31,8 @@ class WizardRecoveryTests(unittest.TestCase):
         self.assertEqual(budget[4],256)
 
     def test_scope_budget_retry_keeps_previous_fields(self):
-        large=','.join(f'10.0.{index}.0/24' for index in range(5))
+        over=wizard.MAX_SCOPED_ADDRESSES//254+2   # exceed the scope cap to force the retry
+        large=','.join(f'10.{index//256}.{index%256}.0/24' for index in range(over))
         answers=iter([large,'','','','10.0.0.0/24','','',''])
         defaults=[]
         def answer(label,default=''):

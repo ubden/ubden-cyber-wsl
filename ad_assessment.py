@@ -106,6 +106,191 @@ def _domain_admins(connection, base, domain_sid):
     return None
 
 
+# --- Deep enumeration: UAC risk flags, Kerberoast/AS-REP, sensitive groups, computers ---
+
+# userAccountControl bits (values match the standard AD constants).
+_UAC_FLAGS = (
+    ("disabled", 0x0002, "Devre dışı hesap"),
+    ("passwd_notreqd", 0x0020, "Parola gerekmiyor (PASSWD_NOTREQD)"),
+    ("reversible_encryption", 0x0080, "Tersinir şifreleme açık"),
+    ("password_never_expires", 0x10000, "Parolası hiç bitmiyor (DONT_EXPIRE_PASSWORD)"),
+    ("unconstrained_delegation", 0x80000, "Kısıtlanmamış yetkilendirme (unconstrained delegation)"),
+    ("asrep_roastable", 0x400000, "Kerberos ön-kimlik doğrulaması kapalı (AS-REP roast)"),
+    ("constrained_delegation_proto", 0x1000000, "Protokol geçişli kısıtlı yetkilendirme"),
+)
+# Sensitive/privileged groups to enumerate membership of (CN, locale-independent enough
+# for default domains; missing groups are skipped).
+_SENSITIVE_GROUPS = (
+    "Enterprise Admins", "Schema Admins", "Administrators", "Account Operators",
+    "Backup Operators", "Server Operators", "Print Operators", "DnsAdmins",
+    "Remote Desktop Users", "Protected Users", "Group Policy Creator Owners",
+    "Cert Publishers",
+)
+
+
+def _val(entry, attr):
+    try:
+        value = entry[attr].value if attr in entry else None
+    except Exception:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    return str(value) if value not in (None, "") else ""
+
+
+def _vals(entry, attr):
+    try:
+        raw = entry[attr].values if attr in entry else []
+    except Exception:
+        return []
+    return [str(v) for v in raw if v not in (None, "")]
+
+
+def _cn(dn):
+    head = str(dn).split(",", 1)[0]
+    return head[3:] if head.lower().startswith("cn=") else head
+
+
+def _escape_filter(value):
+    out = []
+    for ch in str(value):
+        if ch in "\\*()\x00":
+            out.append("\\%02x" % ord(ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _filetime_dt(entry, attr):
+    """Windows FILETIME (100-ns since 1601) or a datetime -> aware datetime, else None."""
+    from datetime import datetime, timezone, timedelta
+    try:
+        value = entry[attr].value if attr in entry else None
+    except Exception:
+        return None
+    if value in (None, 0, "0"):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        ticks = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ticks <= 0:
+        return None
+    try:
+        return datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=ticks / 10)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _deep_enum(connection, base):
+    """UAC risk flags, Kerberoastable/AS-REP users, sensitive-group members and a
+    computer inventory (dNSHostName/OS/lastLogon) with forward-resolved IPs. Every read
+    is standard read-only LDAP a normal domain user can perform; each block degrades
+    independently on error."""
+    import socket
+    from datetime import datetime, timezone, timedelta
+    out = {}
+    risky = {key: [] for key, _, _ in _UAC_FLAGS}
+    kerberoastable, asrep = [], []
+    try:
+        connection.search(base, "(&(objectCategory=person)(objectClass=user))",
+                          attributes=["sAMAccountName", "userAccountControl",
+                                      "servicePrincipalName", "adminCount"],
+                          size_limit=5000, time_limit=30)
+        for e in connection.entries:
+            sam = _val(e, "sAMAccountName")
+            if not sam:
+                continue
+            uac = _as_int(e, "userAccountControl") or 0
+            for key, bit, _ in _UAC_FLAGS:
+                if uac & bit:
+                    risky[key].append(sam)
+            spns = _vals(e, "servicePrincipalName")
+            if spns and sam.lower() != "krbtgt":
+                kerberoastable.append({"account": sam, "spn_count": len(spns),
+                                       "admin": bool(_as_int(e, "adminCount"))})
+            if (uac & 0x400000) and sam.lower() != "krbtgt":
+                asrep.append(sam)
+    except Exception:
+        pass
+    out["risky_accounts"] = {k: sorted(set(v))[:300] for k, v in risky.items() if v}
+    out["kerberoastable"] = sorted(kerberoastable, key=lambda x: x["account"])[:300]
+    out["asrep_roastable"] = sorted(set(asrep))[:300]
+
+    groups = {}
+    for gname in _SENSITIVE_GROUPS:
+        try:
+            connection.search(base, f"(&(objectCategory=group)(cn={_escape_filter(gname)}))",
+                              attributes=["member"], size_limit=1, time_limit=10)
+        except Exception:
+            continue
+        if not connection.entries:
+            continue
+        members = [_cn(dn) for dn in _vals(connection.entries[0], "member")]
+        if members:
+            groups[gname] = sorted(members)[:100]
+    out["sensitive_groups"] = groups
+
+    computers, os_summary = [], {}
+    stale_cut = datetime.now(timezone.utc) - timedelta(days=90)
+    try:
+        connection.search(base, "(objectCategory=computer)",
+                          attributes=["sAMAccountName", "dNSHostName", "operatingSystem",
+                                      "operatingSystemVersion", "lastLogonTimestamp"],
+                          size_limit=5000, time_limit=30)
+        for e in connection.entries:
+            name = (_val(e, "sAMAccountName") or "").rstrip("$")
+            dns = _val(e, "dNSHostName")
+            os_name = _val(e, "operatingSystem")
+            key = os_name or "(OS kaydı yok)"
+            os_summary[key] = os_summary.get(key, 0) + 1
+            when = _filetime_dt(e, "lastLogonTimestamp")
+            ip = ""
+            if dns:
+                try:
+                    ip = socket.gethostbyname(dns)
+                except OSError:
+                    ip = ""
+            computers.append({"name": name, "dns": dns, "ip": ip, "os": os_name,
+                              "os_version": _val(e, "operatingSystemVersion"),
+                              "last_logon": when.date().isoformat() if when else "",
+                              "stale": (when is None) or (when < stale_cut)})
+    except Exception:
+        pass
+    out["computers"] = sorted(computers, key=lambda x: x["name"])[:2000]
+    out["computer_os_summary"] = dict(sorted(os_summary.items(), key=lambda kv: -kv[1]))
+    out["stale_computers"] = sorted(c["name"] for c in computers if c["stale"])[:300]
+    # name<->ip map that device_inventory uses to fill hostnames from AD (authoritative).
+    out["computer_ip_map"] = {c["ip"]: (c["dns"] or c["name"]) for c in computers if c["ip"]}
+    return out
+
+
+def _cleartext_bind(dc, pinned_ip, username, domain, password):
+    """Does the DC accept a SIMPLE bind over cleartext LDAP/389 (no TLS)? If yes, LDAP
+    signing/channel-binding is not enforced -> credentials cross the wire in the clear and
+    the DC is exposed to NTLM-relay-to-LDAP. Uses the supplied test account only."""
+    try:
+        from ldap3 import Server, Connection, SIMPLE, NONE
+    except Exception:
+        return None
+    host = pinned_ip or dc
+    upn = username if ("@" in username or "\\" in username) else f"{username}@{domain}"
+    try:
+        server = Server(host, port=389, use_ssl=False, get_info=NONE, connect_timeout=5)
+        conn = Connection(server, user=upn, password=password,
+                          authentication=SIMPLE, receive_timeout=8)
+        ok = bool(conn.bind())
+        try:
+            conn.unbind()
+        except Exception:
+            pass
+        return ok
+    except Exception:
+        return None
+
+
 # Transport ladder: most secure first. Real DCs very often present a self-signed
 # LDAPS certificate (or do not publish 636 at all), so strict validation alone
 # fails with LDAPSocketOpenError. We degrade gracefully — encrypted-but-unvalidated
@@ -224,6 +409,7 @@ def _collect(connection, base, domain, dc, username=""):
     policy, maq, domain_sid = _password_policy(connection, base)
     admins = _domain_admins(connection, base, domain_sid)
     membership = _member_of(connection, base, username)
+    deep = _deep_enum(connection, base)
     result = {"status": "ok", "domain": domain, "dc": dc, "root_dse": root_data,
               "inventory": outcome,
               "user_names": samples.get("users", []), "group_names": samples.get("groups", []),
@@ -236,6 +422,7 @@ def _collect(connection, base, domain, dc, username=""):
         result["domain_admins"] = admins
     if membership:
         result["test_account_membership"] = membership
+    result.update({k: v for k, v in deep.items() if v})
     return result
 
 
@@ -271,6 +458,9 @@ def inspect(dc: str, domain: str, username: str, password: str,
         result["source"] = note + " · salt okunur test hesabı"
         if mode != "ldaps_strict":
             result["security_warning"] = note
+        cleartext = _cleartext_bind(dc, pinned_ip, username, domain, password)
+        if cleartext is not None:
+            result["ldap_cleartext_bind"] = cleartext
         return result
     return {"status": "error", "domain": domain, "dc": dc,
             "reason": (f"LDAP baglantisi kurulamadi (denenen: {', '.join(m for m, _ in modes)}); "

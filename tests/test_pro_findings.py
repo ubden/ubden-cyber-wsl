@@ -237,6 +237,67 @@ class AdAssessmentReadsTests(unittest.TestCase):
         self.assertEqual(r['test_account_membership']['account'], 'alice')
         self.assertIn('VPN Users', r['test_account_membership']['groups'])
 
+    def test_deep_enum_flags_kerberoast_groups_computers(self):
+        import types, socket
+        from datetime import datetime, timezone, timedelta
+        from unittest.mock import patch
+        import ad_assessment
+
+        class E:
+            def __init__(self, d): self.d = d
+            def __contains__(self, k): return k in self.d
+            def __getitem__(self, k):
+                v = self.d[k]
+                return types.SimpleNamespace(value=v, values=v if isinstance(v, list) else [v])
+
+        now = datetime.now(timezone.utc)
+        ft = lambda dt: int((dt - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 1e7)
+        users = [
+            E({'sAMAccountName': 'svc_web', 'userAccountControl': 0x10200,
+               'servicePrincipalName': ['HTTP/web'], 'adminCount': 1}),   # kerberoast + never-expires
+            E({'sAMAccountName': 'joe', 'userAccountControl': 0x400200}),  # AS-REP roastable
+            E({'sAMAccountName': 'guest', 'userAccountControl': 0x222}),   # disabled + passwd_notreqd
+            E({'sAMAccountName': 'krbtgt', 'userAccountControl': 0x400200,
+               'servicePrincipalName': ['kadmin/x']}),                     # must be excluded
+        ]
+        computers = [
+            E({'sAMAccountName': 'DC01$', 'dNSHostName': 'dc01.x.local',
+               'operatingSystem': 'Windows Server 2019 Standard',
+               'lastLogonTimestamp': ft(now - timedelta(days=2))}),
+            E({'sAMAccountName': 'OLD$', 'dNSHostName': 'old.x.local',
+               'operatingSystem': 'Windows 7', 'lastLogonTimestamp': ft(now - timedelta(days=200))}),
+        ]
+
+        class Conn:
+            entries = []
+            def search(self, base, filt, **k):
+                if 'objectClass=user' in filt:
+                    self.entries = users
+                elif 'cn=Enterprise Admins' in filt:
+                    self.entries = [E({'member': ['CN=Administrator,CN=Users,DC=x']})]
+                elif 'objectCategory=computer' in filt:
+                    self.entries = computers
+                else:
+                    self.entries = []
+                return True
+
+        dns_map = {'dc01.x.local': '10.0.0.10', 'old.x.local': '10.0.0.9'}
+        with patch.object(socket, 'gethostbyname', lambda h: dns_map[h]):
+            out = ad_assessment._deep_enum(Conn(), 'DC=x')
+        kerb = [k['account'] for k in out['kerberoastable']]
+        self.assertIn('svc_web', kerb)
+        self.assertNotIn('krbtgt', kerb)
+        self.assertIn('joe', out['asrep_roastable'])
+        self.assertNotIn('krbtgt', out['asrep_roastable'])
+        self.assertIn('svc_web', out['risky_accounts']['password_never_expires'])
+        self.assertIn('guest', out['risky_accounts']['disabled'])
+        self.assertIn('guest', out['risky_accounts']['passwd_notreqd'])
+        self.assertEqual(out['sensitive_groups']['Enterprise Admins'], ['Administrator'])
+        self.assertEqual(out['computer_ip_map']['10.0.0.10'], 'dc01.x.local')
+        self.assertIn('OLD', out['stale_computers'])
+        self.assertNotIn('DC01', out['stale_computers'])
+        self.assertEqual(out['computer_os_summary']['Windows Server 2019 Standard'], 1)
+
     def test_falls_back_to_insecure_ldaps_when_strict_fails(self):
         import types
         from unittest.mock import patch

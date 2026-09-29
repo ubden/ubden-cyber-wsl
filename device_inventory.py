@@ -384,6 +384,52 @@ def _clean_name(value):
     return text.strip()[:120]
 
 
+def _enrich_from_ad(devices, root):
+    """Overlay AD computer facts (dNSHostName + OS) onto observed devices by IP. AD is an
+    authoritative name source that works across subnets (LDAP + forward DNS), so it fills
+    hostnames the L2/NBSTAT probes miss and refines PC-vs-server from the OS string. Only
+    OBSERVED devices are touched — AD-only hosts are not invented here."""
+    try:
+        ad=json.loads((root/'AD_ASSESSMENT.json').read_text(encoding='utf-8-sig'))
+    except (OSError,ValueError):
+        return 0
+    if not isinstance(ad,dict):
+        return 0
+    named=0
+    for comp in ad.get('computers') or []:
+        if not isinstance(comp,dict):
+            continue
+        ip=str(comp.get('ip') or '').strip()
+        dev=devices.get(ip)
+        if not dev:
+            continue
+        name=_clean_name(comp.get('dns') or comp.get('name') or '')
+        if name:
+            if not dev.get('display_name'):
+                dev['display_name']=name; named+=1
+            sig=f'AD bilgisayar adı: {name}'
+            if sig not in dev.get('signals',[]):
+                dev.setdefault('signals',[]).append(sig)
+        os_name=str(comp.get('os') or '').strip()
+        if os_name:
+            osig=f'AD işletim sistemi: {os_name}'+(f" ({comp.get('os_version')})" if comp.get('os_version') else '')
+            if osig not in dev.get('signals',[]):
+                dev.setdefault('signals',[]).insert(0,osig)
+            low=os_name.lower()
+            if 'server' in low and dev.get('category_key') in ('pc','unknown'):
+                dev['category'],dev['category_key']=CATEGORIES['server'],'server'
+                dev['confidence'],dev['confidence_pct']='orta',max(int(dev.get('confidence_pct') or 0),82)
+            elif ('windows 1' in low or 'windows 7' in low or 'windows 8' in low) and dev.get('category_key')=='unknown':
+                dev['category'],dev['category_key']=CATEGORIES['pc'],'pc'
+                dev['confidence'],dev['confidence_pct']='orta',max(int(dev.get('confidence_pct') or 0),80)
+        if comp.get('stale'):
+            note='AD: 90+ gündür oturum açmamış (bayat bilgisayar hesabı)'
+            if note not in dev.get('notices',[]):
+                dev.setdefault('notices',[]).append(note)
+        dev['ad_joined']=True
+    return named
+
+
 def build_inventory(root,meta,neighbours=None,oui_paths=None):
     root=Path(root)
     permitted=allowed_ips(root,meta)
@@ -610,6 +656,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                 'interface_index':adapter['index'],
                 'status':'servis taraması kanıtlı' if ip in devices else 'yalnız Windows adaptör kaydı; Kali erişimi doğrulanmadı',
                 'evidence':'HOST_CAPABILITIES.json' if (root/'HOST_CAPABILITIES.json').is_file() else 'engagement.json'})
+    ad_named=_enrich_from_ad(devices, root)
     duplicates=defaultdict(list)
     for device in devices.values():
         if device['mac']:
@@ -622,6 +669,9 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
     ordered=sorted(devices.values(),key=lambda row:ipaddress.ip_address(row['ip']))
     summary={'schema':1,'source':'UBDEN yerel cihaz envanteri',
              'host_count':len(ordered),'mac_count':sum(bool(row['mac']) for row in ordered),
+             'named_count':sum(bool(row.get('display_name')) for row in ordered),
+             'ad_joined_count':sum(bool(row.get('ad_joined')) for row in ordered),
+             'ad_named_count':ad_named,
              'local_interface_addresses':local_addresses,
              'unknown_count':sum(row['category']=='Bilinmiyor' for row in ordered),
              'categories':dict(Counter(row['category'] for row in ordered)),
