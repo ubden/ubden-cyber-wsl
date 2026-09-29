@@ -42,6 +42,7 @@ class ScanTargetWiringTests(unittest.TestCase):
                 "discovery_probes": MagicMock(),
                 "vmware_probe": MagicMock(),
                 "appliance_probe": MagicMock(),
+                "network_device_probe": MagicMock(),
                 "share_probe": MagicMock(),
                 "web_identify": MagicMock(),
                 "run_supplemental": MagicMock(),

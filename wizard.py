@@ -43,6 +43,7 @@ import appliance_probe
 import credential_probes
 import discovery_probes
 import netbios_probe
+import network_device_probe
 import share_probe
 import vmware_probe
 import web_identify
@@ -1137,6 +1138,10 @@ def run_probe_suite(target, meta, root, raw, events, assets, discovered_ports,
             appliance_probe.run(assets,discovered_ports,raw,events)
         except Exception as exc:
             events.append({'step':'appliance_version','status':'warn','detail':str(exc)[:200]})
+        try:
+            network_device_probe.run(assets,discovered_ports,raw,events)
+        except Exception as exc:
+            events.append({'step':'netdev_fingerprint','status':'warn','detail':str(exc)[:200]})
         try:
             share_probe.run(assets,discovered_ports,raw,events)
         except Exception as exc:

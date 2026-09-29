@@ -1043,6 +1043,20 @@ def read_data(root):
                 'impact':'Erişilebilir FortiGate yönetim veya SSL-VPN arayüzü, bilinen FortiOS açıkları (ör. kimlik doğrulama atlatma/RCE) için birincil hedeftir.',
                 'recommendation':'Yönetim arayüzünü güvenilir ağlarla sınırlayın (trusted hosts); gerekmiyorsa SSL-VPN’i kapatın; FortiOS’u yamalı tutun.',
                 'evidence':rel})
+    # --- Ağ cihazı (firewall/switch/AP/router/NAS) kimliksiz kimlik ve sürüm ifşası ---
+    for path in sorted((root/'targets').glob('*/raw/netdev_*.json')) if (root/'targets').exists() else []:
+        try:
+            item=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError,TypeError):
+            continue
+        if not isinstance(item,dict) or not item.get('brand'):
+            continue
+        ver=item.get('version') or ''
+        observations.append({'title':f"Ağ cihazı kimliksiz tespit{' + sürüm ifşası' if ver else ''}: {item.get('brand','?')}",'severity':'medium' if ver else 'low','asset':str(item.get('target','')),
+            'description':f"{item.get('brand','?')} yönetim arayüzü kimlik doğrulamadan tespit edildi (port {item.get('port','?')}, {item.get('path','')})."+(f" Sürüm/derleme: {ver}." if ver else ' Sürüm sızmadı.'),
+            'impact':'Erişilebilir cihaz yönetim arayüzü, bilinen üretici açıkları için birincil hedeftir; kesin sürüm/derleme, o sürüme özgü CVE’lerin hedeflenmesini kolaylaştırır.',
+            'recommendation':'Yönetim arayüzünü ayrı/güvenilir yönetim ağıyla sınırlayın; güçlü kimlik doğrulama uygulayın; firmware’i güncel tutun.',
+            'evidence':str(path.relative_to(root))})
     # --- SMB paylaşım envanteri: düşük yetkili yazılabilir paylaşımlar ---
     for path in sorted((root/'targets').glob('*/raw/share_*.json')) if (root/'targets').exists() else []:
         try:

@@ -571,7 +571,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                 except (ValueError,OSError,AttributeError):
                     pass
         # mDNS (Bonjour) hostname/services + SSDP (UPnP) SERVER/device type + vSphere/appliance version.
-        mdns={}; ssdp={}; vmware={}; appliance={}
+        mdns={}; ssdp={}; vmware={}; appliance={}; netdev={}
         for rawdir in entry['raws']:
             if not mdns:
                 mp=rawdir/f'mdns_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
@@ -601,6 +601,13 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                         ad=json.loads(ap.read_text(encoding='utf-8'))
                         if ad.get('target')==ip: appliance=ad
                     except (ValueError,OSError,AttributeError): pass
+            if not netdev:
+                np=rawdir/f'netdev_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
+                if np.is_file():
+                    try:
+                        nd=json.loads(np.read_text(encoding='utf-8'))
+                        if nd.get('target')==ip: netdev=nd
+                    except (ValueError,OSError,AttributeError): pass
         random_mac=bool(mac and int(mac.replace(':','')[:2],16)&2)
         blob=' '.join([vendor]
                       +[f"{p.get('service','')} {p.get('product','')} {p.get('version','')} {p.get('extra_info','')}" for p in ports]
@@ -609,12 +616,20 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                       +[ssdp.get('server','')]+list(ssdp.get('devices') or [])
                       +[vmware.get('product',''),vmware.get('version','')]
                       +[(v or {}).get('product','') for k,v in appliance.items() if isinstance(v,dict)]
+                      +[netdev.get('brand','')]
                       +[o.get('name','') for o in entry['os_matches']]
                       +[netbios.get('name',''),netbios.get('domain','')]
                       +[web_id.get('title',''),web_id.get('server',''),web_id.get('snippet','')])
         cls=classify_device({'vendor':vendor,'ports':ports,'snmp':snmp_description,'text':blob,
                              'os':entry['os_matches'],'gateway':ip in gateways,'random_mac':random_mac})
         category,confidence,signals=cls['category'],cls['confidence'],cls['evidence']
+        # A network-device fingerprint (hit a specific brand mgmt endpoint) is authoritative.
+        if netdev.get('category') in CATEGORIES and netdev.get('brand'):
+            cls={**cls,'key':netdev['category'],'category':CATEGORIES[netdev['category']],
+                 'confidence_pct':max(int(cls.get('confidence_pct') or 0),90)}
+            category=CATEGORIES[netdev['category']]; confidence='yüksek'
+            _nv=f" {netdev['version']}" if netdev.get('version') else ''
+            signals=list(signals)+[f"Ağ cihazı parmak izi (kimliksiz): {netdev['brand']}{_nv}"]
         roles=role_candidates(ports,vendor,ip in gateways)
         nb_role=str(netbios.get('role','')).lower()
         if 'domain controller' in nb_role:

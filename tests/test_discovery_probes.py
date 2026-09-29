@@ -101,6 +101,29 @@ class ApplianceTests(unittest.TestCase):
         self.assertEqual(AP.synology("10.0.0.4", {5000})["version"], "7.2-64570")
 
 
+class NetworkDeviceTests(unittest.TestCase):
+    def test_fingerprint_brands_and_versions(self):
+        import network_device_probe as N
+        N._fetch = lambda url, rh=None, to=6, **k: (({"Server": "nginx"}, '{"meta":{"rc":"ok","server_version":"8.0.28"}}')
+                                                    if "/status" in url else ({}, ""))
+        u = N.identify("10.0.0.1", {8443})
+        self.assertEqual(u["brand"], "Ubiquiti UniFi")
+        self.assertEqual(u["category"], "ap")
+        self.assertEqual(u["version"], "8.0.28")
+        N._fetch = lambda url, rh=None, to=6, **k: (({"Server": "Mikrotik HttpProxy"}, "<h1>RouterOS v7.14.2</h1>"))
+        m = N.identify("10.0.0.2", {80})
+        self.assertEqual(m["brand"], "MikroTik RouterOS")
+        self.assertEqual(m["version"], "7.14.2")
+        N._fetch = lambda url, rh=None, to=6, **k: (({}, '<title>Sophos</title> href="/themes/lite1/css/typography.css?version=20.0.2"')
+                                                   if "login.jsp" in url else ({}, ""))
+        s = N.identify("10.0.0.3", {4444})
+        self.assertEqual(s["category"], "firewall")
+        self.assertEqual(s["version"], "20.0.2")
+        # a host with no matching content returns {}
+        N._fetch = lambda url, rh=None, to=6, **k: (({"Server": "Apache"}, "<html>hello</html>"))
+        self.assertEqual(N.identify("10.0.0.9", {443}), {})
+
+
 class ClassifyWiringTests(unittest.TestCase):
     def test_mdns_ssdp_service_types_classify(self):
         k = lambda text: D.classify_device({"vendor": "", "ports": [], "text": text})["key"]

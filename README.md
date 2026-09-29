@@ -96,16 +96,16 @@ UBDEN Cyber Security Systems test ekibi
 PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.44/bootstrap.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.45/bootstrap.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.44/bootstrap.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.45/bootstrap.ps1' | iex"
 ```
 
-Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v5.0.0-wsl.44/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
+Komut [sürüm etiketli başlangıç betiğini](https://github.com/ubden/ubden-cyber-wsl/blob/v5.0.0-wsl.45/bootstrap.ps1) çalıştırır. Betik kaynak paketini indirir, mevcut Kali WSL kurulumunu kullanır veya eksikse kurar, bağımlılıkları hazırlar ve görev sihirbazını açar. Windows yeniden başlatması gerekirse işlem sonraki oturumda devam eder. Kurulum yönetici izni isteyebilir.
 
 Kurulum önce mirrored ağı ve DNS tünellemeyi dener. Mirrored yapılandırması bilgisayardaki **tüm WSL 2 dağıtımlarını** etkiler. Mirrored başlatılamazsa Kali IPv4 adresi ve varsayılan rota doğrulanarak NAT ağında devam edilir. IP tabanlı LAN testlerinde Windows adaptör rotası ve Kali rotası her hedef için ayrıca denetlenir; hedefe erişim doğrulanmadan test başarılı sayılmaz. NAT modunda Kali fiziksel Windows ağ kartlarını doğrudan görmez. Ham katman-2, yayın trafiği, pasif fiziksel ağ yakalama ve bazı VPN yolları için ayrı uygunluk denetimi gerekir. Kullanılan ağ modu görev raporuna yazılır.
 
@@ -126,13 +126,13 @@ ve Nmap+Npcap'i kurar.
 İkinci tek satırlık kurulum — PowerShell:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.44/bootstrap-win.ps1' | iex
+irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.45/bootstrap-win.ps1' | iex
 ```
 
 CMD:
 
 ```cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.44/bootstrap-win.ps1' | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/ubden/ubden-cyber-wsl/v5.0.0-wsl.45/bootstrap-win.ps1' | iex"
 ```
 
 Kurucu kaynağı indirir, ayrı bir yönetici penceresinde `ubden-win.ps1`'i çalıştırır,
@@ -206,6 +206,16 @@ login sürümü) ve **QNAP QTS** (`/cgi-bin/authLogin.cgi` → model, sürüm, b
 edilir; her biri cihazı doğru sınıflandırır (BMC→sunucu, NAS→nas) ve kesin sürüm/derleme ile CVE
 eşlemesi için taslak bulgu üretir. HPE/Dell depolama (Nimble/3PAR/MSA/PowerVault/Unity…) metin
 imzalarıyla sınıflandırılır.
+
+**Ağ cihazı markası/sürümü (kimliksiz, ~30 marka):** Yönetim arayüzü portlarına giden hostlarda,
+gerçek ve kaynaklı parmak izleriyle (firecrawl araştırması) marka ve mümkünse sürüm/build kimliksiz
+tespit edilir: **Sophos, WatchGuard, Palo Alto, Zyxel, DrayTek, Juniper, MikroTik, Cisco (ASA/
+IOS-XE/Meraki), Aruba (ClearPass/Instant/InstantOn/OS-CX/ProCurve), HPE (Comware/OfficeConnect),
+Ubiquiti (UniFi/EdgeOS), TP-Link (Omada), Ruijie/Reyee, HPE depolama (Nimble/3PAR/MSA/StoreOnce),
+Dell depolama (PowerVault/Unity/PowerStore/OneFS/Compellent/EqualLogic), genel Redfish**. Örnek:
+UniFi `/status`→server_version, Sophos `typography.css?version=`, MikroTik `RouterOS v…`, Dell Unity
+`/api/types/basicSystemInfo`→softwareVersion, Zyxel `zld_product_spec.js`. Parmak izi cihazı doğru
+sınıflandırır (firewall/switch/AP/router/NAS) ve kesin sürümle CVE eşlemesi için taslak bulgu üretir.
 
 **Varsayılan/zayıf kimlik (telnet/ftp/ssh) denemesi:** opt-in etkinken telnet (23), FTP (21) ve
 SSH (22) portlarına markaya göre **kamuya açık üretici varsayılan** kimlikleri denenir; her host/
@@ -358,10 +368,10 @@ Resmî Kali `wordlists` paketi WSL kurulumuna dahildir. Sözlükler yalnız mü�
 
 ## Kurulum ve ortam yönetimi
 
-Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v5.0.0-wsl.44\ubden-wsl.ps1` konumundadır:
+Tek satırlık kurulumdan sonra Windows giriş betiği `%LOCALAPPDATA%\Programs\UBDEN-Cyber\v5.0.0-wsl.45\ubden-wsl.ps1` konumundadır:
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.44\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.45\ubden-wsl.ps1'
 & $ubden -Action status
 & $ubden -Action run
 ```
@@ -373,6 +383,6 @@ $ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.44\ubden-w
 **Windows-native imha (`ubden-win.ps1 -Action destroy`):** Görev bitince Windows tarafını **varsayılana** döndürür (onay için `DESTROY` yazılır; `-Yes` ile sessiz): (1) Windows Defender gerçek-zamanlı korumayı ve Güvenlik Duvarını **geri açar**, eklenen istisnaları kaldırır; (2) güç planını ve ekran koruyucuyu eski haline alır (uyku/hazırda bekleme yeniden etkin); (3) BGInfo masaüstü panelini kaldırıp **önceki duvar kâğıdını** geri getirir; (4) kurduğumuz **venv + araçlar + durum** dosyalarını (`%LOCALAPPDATA%\UBDEN`) siler; (5) isteğe bağlı olarak Kali'deki `offensive-ext` eklentisini ve (ayrı sorup) winget ile Python/Nmap'i kaldırır. **Raporlar korunur** (`%LOCALAPPDATA%\UBDEN-Cyber\Reports`) — teslimattır. Kurulum dizininin kendisi (betik oradan çalıştığı için) elle silinebilir.
 
 ```powershell
-$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.44\ubden-wsl.ps1'
+$ubden = Join-Path $env:LOCALAPPDATA 'Programs\UBDEN-Cyber\v5.0.0-wsl.45\ubden-wsl.ps1'
 & $ubden -Action destroy -ExportTo 'D:\UBDEN-Rapor-Devir'
 ```

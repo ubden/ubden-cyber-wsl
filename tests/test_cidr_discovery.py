@@ -16,10 +16,14 @@ class CidrDiscoveryTests(unittest.TestCase):
 
     def setUp(self):
         # These tests assert exact nmap call sequences; neutralise the environment-
-        # dependent probe helpers (SQL Browser, traceroute/tracert, SNMP extras) so
-        # the result is deterministic on both Kali and Windows (where tracert exists).
+        # dependent probe helpers (SQL Browser, traceroute/tracert, SNMP extras) and the
+        # network-touching probe modules (NetBIOS, mDNS/SSDP/LLDP, vCenter, appliance and
+        # device fingerprints, share enum) so the result is deterministic and fast on both
+        # Kali and Windows — they hit the wire via urllib/sockets, not command(), so they
+        # never appear in the asserted call list but would otherwise stack real timeouts.
         for name in ('discover_sql_browser', 'network_extras', 'snmp_extras', 'probe_snmp',
-                     'netbios_probe', 'web_identify'):
+                     'netbios_probe', 'web_identify', 'discovery_probes', 'vmware_probe',
+                     'appliance_probe', 'network_device_probe', 'share_probe'):
             probe = patch.object(wizard, name)
             probe.start()
             self.addCleanup(probe.stop)
