@@ -243,7 +243,7 @@ def route_guard(ips, selected, raw, events, target):
         for ip in windows_allowed:
             try:
                 route=subprocess.run(['ip','-j','route','get',ip],capture_output=True,
-                                     text=True,timeout=3,check=False)
+                                     text=True,encoding='utf-8',errors='replace',timeout=3,check=False)
                 entries=json.loads(route.stdout) if route.returncode==0 else []
                 selected_route=entries[0] if entries else {}
                 okay=bool(selected_route.get('dev') and selected_route['dev']!='lo')
@@ -560,7 +560,7 @@ def role_probe(root, scenario, ip, credentials, events, attempt=1):
         started=time.monotonic()
         try:
             web_budget_wait()
-            result=subprocess.run(argv,input=_curl_secret_config(secret),text=True,capture_output=True,timeout=20,check=False)
+            result=subprocess.run(argv,input=_curl_secret_config(secret),text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=20,check=False)
             lines=result.stdout.splitlines()
             valid=result.returncode==0 and len(lines)==2 and re.fullmatch(r'[1-5][0-9]{2}',lines[0]) and lines[1].isdigit()
             outcomes[label]={'http_status':int(lines[0]) if valid else None,'bytes':int(lines[1]) if valid else None,
@@ -602,7 +602,7 @@ def access_probe(target, ip, spec, secret, folder, events):
         started=time.monotonic()
         try:
             web_budget_wait()
-            result=subprocess.run(argv+(["--config","-"] if config else [])+[url],input=config,text=True,capture_output=True,timeout=22,check=False)
+            result=subprocess.run(argv+(["--config","-"] if config else [])+[url],input=config,text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=22,check=False)
             code=result.stdout.strip()
             outcomes[mode]={"status":"ok" if result.returncode==0 and re.fullmatch(r"[1-5][0-9]{2}",code) else "error", "http_status":int(code) if re.fullmatch(r"[1-5][0-9]{2}",code) else None,"seconds":round(time.monotonic()-started,2)}
         except (OSError, subprocess.TimeoutExpired):
@@ -996,7 +996,7 @@ def probe_snmp(target, assets, raw, events, max_rate):
         try:
             result=subprocess.run(['snmpget','-v1','-c','public','-t','1','-r','0',
                                    '-Oqv',ip,oid],capture_output=True,text=True,
-                                  timeout=3,check=False)
+                                  encoding='utf-8',errors='replace',timeout=3,check=False)
             response=result.stdout.strip()[:300] if result.returncode==0 else ''
             return response if response and not response.lower().startswith(('timeout:', 'no such')) else ''
         except (OSError,subprocess.TimeoutExpired,ValueError):

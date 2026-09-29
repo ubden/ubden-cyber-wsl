@@ -285,7 +285,8 @@ def _lldp_windows_pktmon(seconds: float = 40.0) -> dict:
 
     def pk(*args):
         try:
-            subprocess.run(["pktmon", *args], capture_output=True, text=True, timeout=40, check=False)
+            subprocess.run(["pktmon", *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=40, check=False)
         except Exception:
             pass
 

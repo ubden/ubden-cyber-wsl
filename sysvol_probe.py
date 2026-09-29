@@ -90,7 +90,7 @@ def crawl(dc: str, domain: str, username: str, password: str, pinned_ip: str | N
         # `net use ... *` reads the password from stdin, so it never appears in argv/history.
         proc = subprocess.run(["net", "use", unc, "/user:" + user_arg, "*"],
                               input=password + "\r\n", capture_output=True, text=True,
-                              timeout=40, check=False)
+                              encoding="utf-8", errors="replace", timeout=40, check=False)
         if proc.returncode != 0:
             return {"status": "error", "reason": "SYSVOL bağlanamadı (net use): "
                     + (proc.stdout or proc.stderr or "").strip()[:200]}
@@ -117,6 +117,7 @@ def crawl(dc: str, domain: str, username: str, password: str, pinned_ip: str | N
         if mounted:
             try:
                 subprocess.run(["net", "use", unc, "/delete", "/y"],
-                              capture_output=True, text=True, timeout=20, check=False)
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=20, check=False)
             except Exception:
                 pass

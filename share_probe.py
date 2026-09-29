@@ -21,7 +21,8 @@ _LOWPRIV_RE = re.compile(r"Everyone|Authenticated Users|Domain Users|\bUsers\b|B
 
 def _run(argv, timeout):
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
 

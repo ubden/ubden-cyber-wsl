@@ -223,7 +223,7 @@ def neighbour_cache():
     if not shutil.which('ip'):
         return {},'iproute2 yüklü değil'
     try:
-        process=subprocess.run(['ip','-j','neigh','show'],capture_output=True,text=True,timeout=4,check=False)
+        process=subprocess.run(['ip','-j','neigh','show'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=4,check=False)
         if process.returncode:
             return {},f'ip neigh çıkış kodu {process.returncode}'
         mapping={}

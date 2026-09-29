@@ -27,7 +27,8 @@ class ReportInsightsTests(unittest.TestCase):
             self.assertEqual(result['status'], 'blocked')
             self.assertEqual(next(row for row in result['checks'] if row['name'] == 'Windows adaptör seçimi')['status'], 'blocked')
             command.assert_called_once_with(['ip', '-4', 'route', 'show', 'default'],
-                                            capture_output=True, text=True, timeout=3, check=False)
+                                            capture_output=True, text=True, encoding="utf-8",
+                                            errors="replace", timeout=3, check=False)
 
     def test_evidence_based_roadmap_and_private_offline_classification(self):
         with tempfile.TemporaryDirectory() as folder:

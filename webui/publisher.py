@@ -334,7 +334,8 @@ def render_pdf(browser: Path, source: Path, output: Path, profile: Path | None =
             f"--user-data-dir={profile}", f"--print-to-pdf={output}", source.as_uri()]
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
-        process = subprocess.run(args, capture_output=True, text=True, timeout=180, creationflags=flags)
+        process = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=180, creationflags=flags)
         if process.returncode != 0 or not output.is_file() or output.stat().st_size < 1000:
             raise RuntimeError(f"PDF oluşturulamadı: {process.stderr[-700:]}")
         with output.open("rb") as pdf:

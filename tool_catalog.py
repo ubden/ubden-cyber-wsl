@@ -92,7 +92,7 @@ def version(package: str) -> str:
     try:
         result = subprocess.run(
             ["dpkg-query", "-W", "-f=${Version}", package],
-            capture_output=True, text=True, timeout=3, check=False,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, check=False,
         )
         return result.stdout.strip()[:80] if result.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
@@ -108,7 +108,7 @@ def package_source(package: str, installed_version: str, found: bool) -> str:
         return "dpkg; APT kökeni doğrulanamadı"
     try:
         result = subprocess.run(["apt-cache", "policy", package], capture_output=True,
-                                text=True, timeout=3, check=False)
+                                text=True, encoding="utf-8", errors="replace", timeout=3, check=False)
         if "o=Kali" in result.stdout or any(
                 "/kali kali-" in line for line in result.stdout.splitlines()):
             return "Kali APT"

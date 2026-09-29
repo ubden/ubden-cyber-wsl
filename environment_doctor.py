@@ -76,7 +76,7 @@ def inspect(meta: dict, run_dir: Path) -> dict:
     if os.name != "nt":
         try:
             route = subprocess.run(["ip", "-4", "route", "show", "default"], capture_output=True,
-                                   text=True, timeout=3, check=False)
+                                   text=True, encoding="utf-8", errors="replace", timeout=3, check=False)
             has_route = route.returncode == 0 and any(
                 line.startswith("default ") for line in route.stdout.splitlines())
         except (OSError, subprocess.TimeoutExpired):

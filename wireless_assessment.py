@@ -40,7 +40,7 @@ def monitor_ready(interface: str) -> bool:
         return False
     try:
         result = subprocess.run(["iw", "dev", interface, "info"], capture_output=True,
-                                text=True, timeout=5, check=False)
+                                text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
         return result.returncode == 0 and bool(re.search(r"(?m)^\s*type\s+monitor\s*$", result.stdout))
     except (OSError, subprocess.TimeoutExpired):
         return False

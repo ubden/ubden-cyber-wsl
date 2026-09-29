@@ -140,7 +140,8 @@ def install_pip(python: str | None = None) -> list:
     for _, package, _ in PIP_TOOLS:
         try:
             proc = subprocess.run([python, "-m", "pip", "install", "--disable-pip-version-check", package],
-                                  capture_output=True, text=True, timeout=600, check=False)
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=600, check=False)
             results.append({"package": package, "ok": proc.returncode == 0,
                             "detail": (proc.stderr or "").strip()[-200:] if proc.returncode else ""})
         except (OSError, subprocess.TimeoutExpired) as exc:
