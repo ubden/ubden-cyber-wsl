@@ -70,6 +70,14 @@ class AppServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     server: AppServer
 
+    def handle_one_request(self) -> None:
+        # Browser tab close / reload drops the socket mid-request; BaseHTTPRequestHandler
+        # otherwise dumps a ConnectionResetError traceback even though nothing failed.
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            self.close_connection = True
+
     def log_message(self, format: str, *args) -> None:
         print(f"[{self.log_date_time_string()}] {format % args}")
 
