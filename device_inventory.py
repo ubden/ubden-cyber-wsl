@@ -87,6 +87,7 @@ TEXT_RULES = (
     (('camera', 'rtsp'), 'camera', 46),
     (('router', 'gateway', 'modem', 'residential gateway'), 'router', 34),
     (('access point', 'wireless ap'), 'ap', 34),
+    (('webmin', 'miniserv', 'usermin'), 'server', 40),
     (('smart-ups', 'battery'), 'ups', 42),
     # mDNS (Bonjour) service types and SSDP device/SERVER hints.
     (('_ipp._tcp', '_printer._tcp', '_pdl-datastream', '_scanner._tcp', '_uscan._tcp'), 'printer', 55),
@@ -567,8 +568,8 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                         web_id=wd; break
                 except (ValueError,OSError,AttributeError):
                     pass
-        # mDNS (Bonjour) hostname/services + SSDP (UPnP) SERVER/device type + vSphere version.
-        mdns={}; ssdp={}; vmware={}
+        # mDNS (Bonjour) hostname/services + SSDP (UPnP) SERVER/device type + vSphere/appliance version.
+        mdns={}; ssdp={}; vmware={}; appliance={}
         for rawdir in entry['raws']:
             if not mdns:
                 mp=rawdir/f'mdns_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
@@ -591,6 +592,13 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                         vd=json.loads(vp.read_text(encoding='utf-8'))
                         if vd.get('target')==ip: vmware=vd
                     except (ValueError,OSError,AttributeError): pass
+            if not appliance:
+                ap=rawdir/f'appliance_{re.sub(r"[^A-Za-z0-9._-]","_",ip)[:90]}.json'
+                if ap.is_file():
+                    try:
+                        ad=json.loads(ap.read_text(encoding='utf-8'))
+                        if ad.get('target')==ip: appliance=ad
+                    except (ValueError,OSError,AttributeError): pass
         random_mac=bool(mac and int(mac.replace(':','')[:2],16)&2)
         blob=' '.join([vendor]
                       +[f"{p.get('service','')} {p.get('product','')} {p.get('version','')} {p.get('extra_info','')}" for p in ports]
@@ -598,6 +606,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                       +[mdns.get('hostname','')]+list(mdns.get('services') or [])
                       +[ssdp.get('server','')]+list(ssdp.get('devices') or [])
                       +[vmware.get('product',''),vmware.get('version','')]
+                      +[(appliance.get('webmin') or {}).get('product',''),(appliance.get('fortigate') or {}).get('product','')]
                       +[o.get('name','') for o in entry['os_matches']]
                       +[netbios.get('name',''),netbios.get('domain','')]
                       +[web_id.get('title',''),web_id.get('server',''),web_id.get('snippet','')])
@@ -624,6 +633,10 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
             signals=list(signals)+[('SSDP: '+(ssdp.get('server','')+' '+' '.join((ssdp.get('devices') or [])[:3])).strip())]
         if vmware.get('product'):
             signals=list(signals)+[f"vSphere sürüm ifşası (kimliksiz): {vmware['product']}"+(f" build {vmware.get('build')}" if vmware.get('build') else '')]
+        for _ak,_al in (('fortigate','FortiGate'),('webmin','Webmin')):
+            _a=appliance.get(_ak) or {}
+            if _a.get('product'):
+                signals=list(signals)+[f"{_al} (kimliksiz ifşa): {_a['product']}"+(f" {_a['version']}" if _a.get('version') else '')]
         # Display name: NetBIOS computer name > DNS hostname > web title (kısa/anlamlı) > (blank).
         clean_hostnames=[_clean_name(h) for h in entry['hostnames'] if _clean_name(h)]
         display_name=(_clean_name(netbios.get('name')) or _clean_name(mdns.get('hostname'))

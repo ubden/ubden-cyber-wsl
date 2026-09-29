@@ -203,9 +203,86 @@ def mdns_scan(timeout: float = 3.0, cap: int = 4096) -> dict:
 
 # ---------------------------------------------------------------- LLDP --
 
+def _parse_pcap_lldp(data: bytes) -> dict:
+    """Extract LLDP frames from a classic libpcap file (what `pktmon etl2pcap` writes)."""
+    out: dict = {}
+    if len(data) < 24:
+        return out
+    magic = data[:4]
+    if magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1"):
+        end = "<"
+    elif magic in (b"\xa1\xb2\xc3\xd4", b"\xa1\xb2\x3c\x4d"):
+        end = ">"
+    else:
+        return out
+    off = 24
+    while off + 16 <= len(data) and len(out) < 128:
+        try:
+            _s, _u, incl, _o = struct.unpack_from(end + "IIII", data, off)
+        except struct.error:
+            break
+        off += 16
+        frame = data[off:off + incl]
+        off += incl
+        if len(frame) >= 14 and frame[12:14] == b"\x88\xcc":
+            info = _parse_lldp(frame[14:])
+            if info:
+                out[info.get("chassis_id") or info.get("system_name") or str(len(out))] = info
+    return out
+
+
+def _lldp_windows_pktmon(seconds: float = 40.0) -> dict:
+    """Capture LLDP on Windows with the built-in pktmon (no extra software; needs admin).
+    Filters ethertype 0x88cc, converts the ETL to pcap, and parses it. Returns {} if pktmon
+    or etl2pcap is unavailable."""
+    import os
+    import subprocess
+    import tempfile
+    from shutil import which
+    if os.name != "nt" or not which("pktmon"):
+        return {}
+    tmp = Path(tempfile.gettempdir())
+    etl = tmp / "ubden_lldp.etl"
+    pcap = etl.with_suffix(".pcap")
+    for path in (etl, pcap):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+    def pk(*args):
+        try:
+            subprocess.run(["pktmon", *args], capture_output=True, text=True, timeout=40, check=False)
+        except Exception:
+            pass
+
+    pk("filter", "remove")
+    pk("filter", "add", "--ethertype", "0x88cc")
+    pk("start", "--capture", "--pkt-size", "0", "--file-name", str(etl), "--comp", "nics")
+    time.sleep(min(max(seconds, 10), 60))
+    pk("stop")
+    pk("filter", "remove")
+    pk("etl2pcap", str(etl))
+    out = {}
+    try:
+        if pcap.is_file():
+            out = _parse_pcap_lldp(pcap.read_bytes())
+    except OSError:
+        pass
+    for path in (etl, pcap):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    return out
+
+
 def lldp_listen(seconds: float = 35.0, cap: int = 128) -> dict:
-    """Sniff LLDP (ethertype 0x88cc) via a raw L2 socket. Linux/Kali only (AF_PACKET);
-    returns {} where raw L2 capture is unavailable (e.g. Windows without Npcap capture)."""
+    """Sniff LLDP (ethertype 0x88cc). On Windows uses the built-in pktmon (needs admin); on
+    Linux/Kali uses a raw AF_PACKET socket. Returns {} where neither is available."""
+    win = _lldp_windows_pktmon(seconds)
+    if win:
+        return win
     if not hasattr(socket, "AF_PACKET"):
         return {}
     try:

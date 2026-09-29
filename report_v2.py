@@ -973,6 +973,29 @@ def read_data(root):
             'impact':'Kesin derleme numarası, o sürüme özgü bilinen CVE’lerin (ör. vCenter RCE zincirleri) hedeflenmesini kolaylaştırır.',
             'recommendation':'vCenter/ESXi’yi desteklenen ve yamalı sürüme güncelleyin; yönetim arayüzlerine erişimi yönetim ağıyla sınırlayın.',
             'evidence':str(path.relative_to(root))})
+    # --- FortiGate / Webmin kimlik ve sürüm ifşası ---
+    for path in sorted((root/'targets').glob('*/raw/appliance_*.json')) if (root/'targets').exists() else []:
+        try:
+            item=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError,TypeError):
+            continue
+        if not isinstance(item,dict):
+            continue
+        ip=str(item.get('target',''))
+        wm=item.get('webmin') or {}
+        if wm.get('version'):
+            observations.append({'title':'Webmin (MiniServ) sürüm ifşası','severity':'medium','asset':ip,
+                'description':f"{wm.get('product','Webmin')} sürüm {wm['version']} — MiniServ Server başlığı kimlik doğrulamadan sürümü açıkladı (port {wm.get('port',10000)}).",
+                'impact':'Belirli Webmin sürümleri kritik uzak kod çalıştırma (RCE) açıklarına sahiptir; kesin sürüm hedeflemeyi kolaylaştırır.',
+                'recommendation':'Webmin’i güncel sürüme yükseltin; yönetim arayüzünü yönetim ağıyla sınırlayın; internete kapatın.',
+                'evidence':str(path.relative_to(root))})
+        fg=item.get('fortigate') or {}
+        if fg.get('product'):
+            observations.append({'title':'FortiGate yönetim/SSL-VPN arayüzü'+(' + sürüm ifşası' if fg.get('version') else ''),'severity':'medium' if fg.get('version') else 'low','asset':ip,
+                'description':f"{fg['product']} tespit edildi (port {fg.get('port',443)})."+(f" FortiOS sürümü: {fg['version']}." if fg.get('version') else ' FortiOS sürümü gizli.'),
+                'impact':'Erişilebilir FortiGate yönetim veya SSL-VPN arayüzü, bilinen FortiOS açıkları (ör. kimlik doğrulama atlatma/RCE) için birincil hedeftir.',
+                'recommendation':'Yönetim arayüzünü güvenilir ağlarla sınırlayın (trusted hosts); gerekmiyorsa SSL-VPN’i kapatın; FortiOS’u yamalı tutun.',
+                'evidence':str(path.relative_to(root))})
     # --- Opt-in sqlmap (yetkili SQL enjeksiyon testi) sonuçları ---
     for path in sorted((root/'targets').glob('*/raw/sqlmap_result_*.json')) if (root/'targets').exists() else []:
         try:
