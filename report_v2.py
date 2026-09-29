@@ -973,7 +973,14 @@ def read_data(root):
             'impact':'Kesin derleme numarası, o sürüme özgü bilinen CVE’lerin (ör. vCenter RCE zincirleri) hedeflenmesini kolaylaştırır.',
             'recommendation':'vCenter/ESXi’yi desteklenen ve yamalı sürüme güncelleyin; yönetim arayüzlerine erişimi yönetim ağıyla sınırlayın.',
             'evidence':str(path.relative_to(root))})
-    # --- FortiGate / Webmin kimlik ve sürüm ifşası ---
+    # --- Cihaz ailesi kimlik/sürüm ifşası (FortiGate, Webmin, iLO/iDRAC BMC, Synology/QNAP NAS) ---
+    _APP_META={
+        'ilo':('HPE iLO (BMC)',True,'Sunucu dışı-bant yönetim denetleyicisi (BMC) ele geçirilirse fiziksel sunucunun tamamı (güç, konsol, sanal medya) kontrol edilebilir; kesin firmware bilinen BMC açıklarını (ör. kimlik doğrulama atlatma) hedeflemeyi kolaylaştırır.'),
+        'idrac':('Dell iDRAC (BMC)',True,'Sunucu dışı-bant yönetim denetleyicisi (BMC) ele geçirilirse fiziksel sunucunun tamamı kontrol edilebilir; kesin firmware bilinen iDRAC açıklarını hedeflemeyi kolaylaştırır.'),
+        'synology':('Synology DSM (NAS)',False,'NAS verisine ve yönetimine yönelik saldırılarda kesin DSM sürümü bilinen açıkların hedeflenmesini kolaylaştırır.'),
+        'qnap':('QNAP QTS (NAS)',False,'QTS geçmişte kimliksiz uzaktan kod çalıştırma açıklarına sahip oldu; kesin sürüm/derleme bilinen açıkların hedeflenmesini kolaylaştırır.'),
+        'webmin':('Webmin (MiniServ)',False,'Belirli Webmin sürümleri kritik uzak kod çalıştırma (RCE) açıklarına sahiptir; kesin sürüm hedeflemeyi kolaylaştırır.'),
+    }
     for path in sorted((root/'targets').glob('*/raw/appliance_*.json')) if (root/'targets').exists() else []:
         try:
             item=json.loads(path.read_text(encoding='utf-8'))
@@ -982,20 +989,27 @@ def read_data(root):
         if not isinstance(item,dict):
             continue
         ip=str(item.get('target',''))
-        wm=item.get('webmin') or {}
-        if wm.get('version'):
-            observations.append({'title':'Webmin (MiniServ) sürüm ifşası','severity':'medium','asset':ip,
-                'description':f"{wm.get('product','Webmin')} sürüm {wm['version']} — MiniServ Server başlığı kimlik doğrulamadan sürümü açıkladı (port {wm.get('port',10000)}).",
-                'impact':'Belirli Webmin sürümleri kritik uzak kod çalıştırma (RCE) açıklarına sahiptir; kesin sürüm hedeflemeyi kolaylaştırır.',
-                'recommendation':'Webmin’i güncel sürüme yükseltin; yönetim arayüzünü yönetim ağıyla sınırlayın; internete kapatın.',
-                'evidence':str(path.relative_to(root))})
+        rel=str(path.relative_to(root))
+        for key,(label,is_bmc,impact) in _APP_META.items():
+            a=item.get(key) or {}
+            if not isinstance(a,dict) or not a.get('product'):
+                continue
+            ver=a.get('version') or ''
+            extra=(f" sürüm {ver}" if ver else '')+(f" (build {a['build']})" if a.get('build') else '')
+            extra+=(f", sunucu modeli {a['server_model']}" if a.get('server_model') else '')+(f", seri no {a['serial']}" if a.get('serial') else '')
+            observations.append({'title':f"{label} kimliksiz kimlik/sürüm ifşası"+(' (BMC)' if is_bmc else ''),
+                'severity':'medium' if ver else 'low','asset':ip,
+                'description':f"{a['product']}{extra} — {a.get('evidence','web arayüzü')} kimlik doğrulamadan kimlik/sürüm bilgisini açıkladı"+(f" (port {a['port']})" if a.get('port') else '')+".",
+                'impact':impact,
+                'recommendation':f"{label.split(' (')[0]} yönetim arayüzünü ayrı/güvenilir yönetim ağıyla sınırlayın; mümkünse kimliksiz veri ifşasını kapatın; en güncel firmware/sürüme yükseltin.",
+                'evidence':rel})
         fg=item.get('fortigate') or {}
         if fg.get('product'):
             observations.append({'title':'FortiGate yönetim/SSL-VPN arayüzü'+(' + sürüm ifşası' if fg.get('version') else ''),'severity':'medium' if fg.get('version') else 'low','asset':ip,
                 'description':f"{fg['product']} tespit edildi (port {fg.get('port',443)})."+(f" FortiOS sürümü: {fg['version']}." if fg.get('version') else ' FortiOS sürümü gizli.'),
                 'impact':'Erişilebilir FortiGate yönetim veya SSL-VPN arayüzü, bilinen FortiOS açıkları (ör. kimlik doğrulama atlatma/RCE) için birincil hedeftir.',
                 'recommendation':'Yönetim arayüzünü güvenilir ağlarla sınırlayın (trusted hosts); gerekmiyorsa SSL-VPN’i kapatın; FortiOS’u yamalı tutun.',
-                'evidence':str(path.relative_to(root))})
+                'evidence':rel})
     # --- Opt-in sqlmap (yetkili SQL enjeksiyon testi) sonuçları ---
     for path in sorted((root/'targets').glob('*/raw/sqlmap_result_*.json')) if (root/'targets').exists() else []:
         try:

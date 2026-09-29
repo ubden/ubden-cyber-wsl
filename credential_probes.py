@@ -238,6 +238,8 @@ def run(target, assets, opened: dict, raw, events, meta, db=None,
         return
     db = db if db is not None else load_db()
     connectors = connectors or _DEFAULT_CONNECTORS
+    tested = {}          # service -> count of (host,port) tested
+    succeeded = {}       # service -> [ "ip:port (user)" ]
     for ip in assets:
         ports = set(opened.get(ip, []))
         if not ports:
@@ -267,6 +269,9 @@ def run(target, assets, opened: dict, raw, events, meta, db=None,
                     valid = username
                     break
             step = f"default_cred_{service}_{_tag(ip)}_{port}"
+            tested[service] = tested.get(service, 0) + 1
+            if valid is not None:
+                succeeded.setdefault(service, []).append(f"{ip}:{port} ({valid})")
             if valid is not None:
                 evidence = {"ip": ip, "port": port, "service": service, "username": valid,
                             "brands": brands, "valid": True,
@@ -283,3 +288,13 @@ def run(target, assets, opened: dict, raw, events, meta, db=None,
                 events.append({"step": step, "tool": "credential-probe", "target": ip,
                                "status": "ok",
                                "detail": f"{service}: denenen varsayılanlarla geçerli oturum gözlenmedi"})
+    if tested:
+        parts = []
+        for svc in sorted(tested):
+            ok = succeeded.get(svc, [])
+            parts.append(f"{svc}: {tested[svc]} host denendi, {len(ok)} başarılı"
+                         + (f" [{', '.join(ok[:8])}]" if ok else ""))
+        any_ok = any(succeeded.values())
+        events.append({"step": "default_cred_summary", "tool": "credential-probe", "target": target,
+                       "status": "review" if any_ok else "ok",
+                       "detail": "Varsayılan/zayıf kimlik denemesi özeti — " + " · ".join(parts)})

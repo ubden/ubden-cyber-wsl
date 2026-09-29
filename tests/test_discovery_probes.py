@@ -72,6 +72,23 @@ class ApplianceTests(unittest.TestCase):
         self.assertEqual(fg["product"], "Fortinet FortiGate")
         self.assertEqual(fg["version"], "7.2.4")
 
+    def test_ilo_idrac_qnap_synology(self):
+        import appliance_probe as AP
+        ilo_xml = ("<RIMP><HSI><SBSN>CZ21510CJD</SBSN><SPN>ProLiant DL380 Gen10</SPN></HSI>"
+                   "<MP><PN>Integrated Lights-Out 5 (iLO 5)</PN><FWRI>2.44</FWRI></MP></RIMP>")
+        AP._fetch = lambda url, **k: (None, ilo_xml) if "xmldata" in url else (None, None)
+        ilo = AP.ilo("10.0.0.1", {443})
+        self.assertEqual(ilo["version"], "2.44")
+        self.assertEqual(ilo["server_model"], "ProLiant DL380 Gen10")
+        AP._fetch = lambda url, **k: (None, '{"Attributes":{"FwVer":"6.10.00.00"}}') if "bmc/info" in url else (None, None)
+        self.assertEqual(AP.idrac("10.0.0.2", {443})["version"], "6.10.00.00")
+        AP._fetch = lambda url, **k: (None, "<QDocRoot><modelName>TS-464</modelName><version>5.1.2</version><build>20240101</build></QDocRoot>") if "authLogin" in url else (None, None)
+        q = AP.qnap("10.0.0.3", {8080})
+        self.assertEqual(q["version"], "5.1.2")
+        self.assertEqual(q["build"], "20240101")
+        AP._fetch = lambda url, **k: (None, '{"data":{"SYNO.API.Auth":{}}}') if "SYNO.API.Info" in url else (None, "<title>DSM 7.2-64570</title>")
+        self.assertEqual(AP.synology("10.0.0.4", {5000})["version"], "7.2-64570")
+
 
 class ClassifyWiringTests(unittest.TestCase):
     def test_mdns_ssdp_service_types_classify(self):

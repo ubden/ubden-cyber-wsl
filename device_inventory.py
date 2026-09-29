@@ -88,6 +88,8 @@ TEXT_RULES = (
     (('router', 'gateway', 'modem', 'residential gateway'), 'router', 34),
     (('access point', 'wireless ap'), 'ap', 34),
     (('webmin', 'miniserv', 'usermin'), 'server', 40),
+    (('integrated lights-out', 'ilo', 'idrac', 'integrated dell remote', 'lifecycle controller', 'ipmi', 'baseboard management'), 'server', 50),
+    (('nimble', '3par', 'primera', 'storeserv', 'msa storage', 'powervault', 'unity', 'powerstore', 'compellent', 'equallogic', 'storeonce'), 'nas', 55),
     (('smart-ups', 'battery'), 'ups', 42),
     # mDNS (Bonjour) service types and SSDP device/SERVER hints.
     (('_ipp._tcp', '_printer._tcp', '_pdl-datastream', '_scanner._tcp', '_uscan._tcp'), 'printer', 55),
@@ -606,7 +608,7 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
                       +[mdns.get('hostname','')]+list(mdns.get('services') or [])
                       +[ssdp.get('server','')]+list(ssdp.get('devices') or [])
                       +[vmware.get('product',''),vmware.get('version','')]
-                      +[(appliance.get('webmin') or {}).get('product',''),(appliance.get('fortigate') or {}).get('product','')]
+                      +[(v or {}).get('product','') for k,v in appliance.items() if isinstance(v,dict)]
                       +[o.get('name','') for o in entry['os_matches']]
                       +[netbios.get('name',''),netbios.get('domain','')]
                       +[web_id.get('title',''),web_id.get('server',''),web_id.get('snippet','')])
@@ -633,10 +635,11 @@ def build_inventory(root,meta,neighbours=None,oui_paths=None):
             signals=list(signals)+[('SSDP: '+(ssdp.get('server','')+' '+' '.join((ssdp.get('devices') or [])[:3])).strip())]
         if vmware.get('product'):
             signals=list(signals)+[f"vSphere sürüm ifşası (kimliksiz): {vmware['product']}"+(f" build {vmware.get('build')}" if vmware.get('build') else '')]
-        for _ak,_al in (('fortigate','FortiGate'),('webmin','Webmin')):
-            _a=appliance.get(_ak) or {}
-            if _a.get('product'):
-                signals=list(signals)+[f"{_al} (kimliksiz ifşa): {_a['product']}"+(f" {_a['version']}" if _a.get('version') else '')]
+        _APP_LABELS={'fortigate':'FortiGate','webmin':'Webmin','ilo':'HPE iLO','idrac':'Dell iDRAC','synology':'Synology','qnap':'QNAP'}
+        for _ak,_av in appliance.items():
+            if isinstance(_av,dict) and _av.get('product'):
+                _ver=_av.get('version') or _av.get('build') or ''
+                signals=list(signals)+[f"{_APP_LABELS.get(_ak,_ak)} (kimliksiz ifşa): {_av['product']}"+(f" {_ver}" if _ver else '')]
         # Display name: NetBIOS computer name > DNS hostname > web title (kısa/anlamlı) > (blank).
         clean_hostnames=[_clean_name(h) for h in entry['hostnames'] if _clean_name(h)]
         display_name=(_clean_name(netbios.get('name')) or _clean_name(mdns.get('hostname'))
